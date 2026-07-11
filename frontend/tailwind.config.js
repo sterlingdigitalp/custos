@@ -4,10 +4,18 @@ export default {
   theme: {
     extend: {
       colors: {
-        ink: '#172033',
-        custos: { 50: '#eff8ff', 100: '#dbeefe', 500: '#2383cf', 600: '#146daf', 700: '#12588b' },
+        base: '#0A110D',
+        surface: '#151E1A',
+        sidebar: '#0E1612',
+        divider: '#23302A',
+        'text-primary': '#E8F0EC',
+        'text-secondary': '#7C8D85',
+        'text-muted': '#4A5A53',
+        accent: '#BEF264',
+        'accent-glow': '#2F5A38',
+        'metric-down': '#E17055',
       },
-      boxShadow: { panel: '0 1px 2px rgb(15 23 42 / 0.05), 0 8px 24px rgb(15 23 42 / 0.04)' },
+      boxShadow: { panel: '0 18px 50px rgb(0 0 0 / 0.12)' },
     },
   },
   plugins: [],
