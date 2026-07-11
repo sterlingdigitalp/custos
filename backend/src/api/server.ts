@@ -565,9 +565,13 @@ export function buildServer(db: DatabaseHandle, deps: ServerDependencies): Fasti
 
   server.get('/api/status', async () => {
     const client = await resolveClient(deps.client)
+    const settings = getSettings(db)
     return {
       scheduler: deps.scheduler?.getStatus() ?? unavailableSchedulerStatus(),
       client: await client.ping(),
+      clientMode: settings.lwaClientId && settings.lwaClientSecret && settings.refreshToken
+        ? 'live'
+        : 'mock',
       corpusSize: listProducts(db, false).length,
     }
   })
