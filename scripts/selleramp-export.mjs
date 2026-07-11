@@ -126,32 +126,33 @@ async function main() {
     return []
   }
 
-  let stalls = 0 // consecutive pages with no forward progress
-  while (pages < MAX_PAGES) {
-    const firstAsin = rows[0]?.asin
-    flush(rows)
-    pages++
-    process.stdout.write(`\rpage ${pages} · ${seen.size} ASINs collected`)
+  // URL-driven pagination: SAS's "Next" button breaks at depth, but the
+  // ?page=N URL param works reliably to any depth. We read whatever filtered
+  // URL you're on, then walk it by incrementing page directly — immune to the
+  // broken Next control, no manual re-navigation. Set PER=48 (or higher) to
+  // pull more rows per request and cut the number of round-trips.
+  const startUrl = new URL(page.url())
+  if (process.env.PER) startUrl.searchParams.set('per-page', process.env.PER)
+  let pageNum = Number(startUrl.searchParams.get('page')) || 1
+  let emptyStreak = 0
 
-    const next = page.locator(
-      'a[rel="next"], .pagination .next:not(.disabled) a, li.next:not(.disabled) a, button:has-text("Next"), a:has-text("Next"), [aria-label="Next"], [aria-label="next"]',
-    ).first()
-    if (!(await next.count()) || !(await next.isEnabled().catch(() => false))) break
-    await next.click().catch(() => {})
-    await page.waitForLoadState('domcontentloaded').catch(() => {})
+  while (pages < MAX_PAGES) {
+    startUrl.searchParams.set('page', String(pageNum))
+    await page.goto(startUrl.toString(), { waitUntil: 'domcontentloaded' }).catch(() => {})
     await page.waitForTimeout(WAIT)
     rows = await rowsWithRetry()
+    const added = flush(rows)
+    pages++
+    process.stdout.write(`\rpage ${pageNum} · ${seen.size} ASINs collected`)
 
-    // Only give up after several consecutive stuck pages — a single slow load
-    // or a transiently-empty read is not the end of the list.
-    if (rows.length === 0 || rows[0]?.asin === firstAsin) {
-      stalls++
-      if (stalls >= 4) { console.log('\nNo further pages after several retries — stopping.'); break }
-      await page.waitForTimeout(1500)
-      rows = await rowsWithRetry()
+    // Two empty pages in a row = past the end of the filtered results.
+    if (rows.length === 0) {
+      emptyStreak++
+      if (emptyStreak >= 2) { console.log('\nReached the end of the filtered results.'); break }
     } else {
-      stalls = 0
+      emptyStreak = 0
     }
+    pageNum++
   }
 
   console.log(`\n\nDone. ${seen.size} ASINs written to ${OUT}`)
