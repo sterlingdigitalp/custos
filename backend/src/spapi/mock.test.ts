@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createCustosClient } from './client.js'
+import { LiveCustosClient } from './live.js'
 import { defaultFixtures, MockCustosApiClient } from './mock.js'
 
 describe('MockCustosApiClient', () => {
@@ -48,16 +49,16 @@ describe('MockCustosApiClient', () => {
     expect(ranks[3]).toBeLessThan(ranks[2])
   })
 
-  it('factory selects mock for incomplete credentials and rejects the live path', () => {
+  it('factory selects mock for incomplete credentials and live for complete credentials', () => {
     expect(createCustosClient({
       lwaClientId: null,
       lwaClientSecret: null,
       refreshToken: null,
     })).toBeInstanceOf(MockCustosApiClient)
-    expect(() => createCustosClient({
+    expect(createCustosClient({
       lwaClientId: 'id',
       lwaClientSecret: 'secret',
       refreshToken: 'token',
-    })).toThrow('live client not implemented yet')
+    })).toBeInstanceOf(LiveCustosClient)
   })
 })

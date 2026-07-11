@@ -206,6 +206,26 @@ export function archiveProduct(
   return getProductById(db, id)
 }
 
+export function deleteProduct(db: DatabaseHandle, id: number): boolean {
+  return db.prepare('DELETE FROM products WHERE id = ?').run(id).changes > 0
+}
+
+export function updateProduct(
+  db: DatabaseHandle,
+  id: number,
+  changes: Partial<Pick<Product, 'title' | 'isArchived'>>,
+): Product | undefined {
+  const keys = Object.keys(changes) as Array<keyof typeof changes>
+  if (keys.length === 0) return getProductById(db, id)
+  const values: Record<string, unknown> = { id }
+  const assignments = keys.map((key) => {
+    values[key] = key === 'isArchived' ? (changes[key] ? 1 : 0) : changes[key]
+    return `${key} = @${key}`
+  })
+  db.prepare(`UPDATE products SET ${assignments.join(', ')} WHERE id = @id`).run(values)
+  return getProductById(db, id)
+}
+
 export function updateProductCatalog(
   db: DatabaseHandle,
   asin: string,
@@ -378,6 +398,28 @@ export function listUnreadAlertEvents(db: DatabaseHandle): AlertEvent[] {
     SELECT * FROM alert_events WHERE isRead = 0 ORDER BY ts DESC, id DESC
   `).all() as AlertEventRow[]
   return rows.map(alertEventFromRow)
+}
+
+export function listAlertEvents(db: DatabaseHandle, unreadOnly = false): AlertEvent[] {
+  const sql = unreadOnly
+    ? 'SELECT * FROM alert_events WHERE isRead = 0 ORDER BY ts DESC, id DESC'
+    : 'SELECT * FROM alert_events ORDER BY ts DESC, id DESC'
+  return (db.prepare(sql).all() as AlertEventRow[]).map(alertEventFromRow)
+}
+
+export function updateAlertEventDelivery(
+  db: DatabaseHandle,
+  id: number,
+  delivered: boolean,
+  deliveryError: string | null,
+): AlertEvent | undefined {
+  db.prepare(`
+    UPDATE alert_events SET delivered = ?, deliveryError = ? WHERE id = ?
+  `).run(delivered ? 1 : 0, deliveryError, id)
+  const row = db.prepare('SELECT * FROM alert_events WHERE id = ?').get(id) as
+    | AlertEventRow
+    | undefined
+  return row && alertEventFromRow(row)
 }
 
 export const listUnread = listUnreadAlertEvents

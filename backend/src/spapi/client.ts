@@ -1,4 +1,5 @@
 import type { Settings } from '../db/repo.js'
+import { LiveCustosClient } from './live.js'
 import { defaultFixtures, MockCustosApiClient } from './mock.js'
 
 export interface OfferSnapshot {
@@ -32,11 +33,18 @@ export interface CustosApiClient {
   ping(): Promise<{ ok: boolean; detail: string }>
 }
 
-type ClientSettings = Pick<Settings, 'lwaClientId' | 'lwaClientSecret' | 'refreshToken'>
+type ClientSettings = Pick<Settings, 'lwaClientId' | 'lwaClientSecret' | 'refreshToken'> &
+  Partial<Pick<Settings, 'marketplaceId' | 'region'>>
 
 export function createCustosClient(settings: ClientSettings): CustosApiClient {
   if (!settings.lwaClientId || !settings.lwaClientSecret || !settings.refreshToken) {
     return new MockCustosApiClient(defaultFixtures())
   }
-  throw new Error('live client not implemented yet')
+  return new LiveCustosClient({
+    lwaClientId: settings.lwaClientId,
+    lwaClientSecret: settings.lwaClientSecret,
+    refreshToken: settings.refreshToken,
+    marketplaceId: settings.marketplaceId ?? 'ATVPDKIKX0DER',
+    region: settings.region ?? 'na',
+  })
 }
