@@ -28,6 +28,7 @@ import {
   type Settings,
 } from '../db/repo.js'
 import type { DatabaseHandle } from '../db/schema.js'
+import { importSelleramp, parseSelleramp } from '../import/selleramp.js'
 import type { CustosApiClient } from '../spapi/client.js'
 import type { SchedulerController, SchedulerStatus } from '../scheduler/loop.js'
 
@@ -309,6 +310,10 @@ function finderResults(db: DatabaseHandle, body: Record<string, unknown>, now: D
 export function buildServer(db: DatabaseHandle, deps: ServerDependencies): FastifyInstance {
   const server = Fastify({ logger: false })
 
+  server.addContentTypeParser('text/csv', { parseAs: 'string' }, (_request, body, done) => {
+    done(null, body)
+  })
+
   void server.register(cors, {
     methods: ['GET', 'POST', 'PATCH', 'DELETE'],
     origin(origin, callback) {
@@ -338,6 +343,24 @@ export function buildServer(db: DatabaseHandle, deps: ServerDependencies): Fasti
 
   server.get('/api/products', async () => productsWithLatest(db))
 
+  server.post('/api/import/selleramp/preview', { bodyLimit: 10 * 1024 * 1024 }, async (request) => {
+    if (typeof request.body !== 'string') throw new ApiError('Request body must be CSV text')
+    const parsed = parseSelleramp(request.body)
+    const tracked = new Set(listProducts(db, false).map((product) => product.asin))
+    const newRows = parsed.rows.filter((row) => !tracked.has(row.asin))
+    return {
+      newCount: newRows.length,
+      alreadyPresent: parsed.rows.length - newRows.length,
+      skippedInvalid: parsed.skipped,
+      sampleNew: newRows.slice(0, 10).map(({ asin, name }) => ({ asin, name })),
+    }
+  })
+
+  server.post('/api/import/selleramp', { bodyLimit: 10 * 1024 * 1024 }, async (request) => {
+    if (typeof request.body !== 'string') throw new ApiError('Request body must be CSV text')
+    return importSelleramp(db, request.body)
+  })
+
   server.post('/api/products', async (request, reply) => {
     const body = bodyRecord(request.body)
     rejectUnknownFields(body, ['asin', 'asins', 'source'])
@@ -345,12 +368,12 @@ export function buildServer(db: DatabaseHandle, deps: ServerDependencies): Fasti
     const asins = 'asin' in body ? [normalizedAsin(body.asin)] : asinList(body.asins)
     if (asins.length === 0) throw new ApiError('asins must contain at least one ASIN')
     const source = body.source ?? 'manual'
-    if (!['manual', 'import', 'seed', 'extension', 'aurora'].includes(String(source))) {
+    if (!['manual', 'import', 'seed', 'extension', 'aurora', 'selleramp'].includes(String(source))) {
       throw new ApiError('source must be a supported product source')
     }
     const products = bulkCreateProducts(db, asins.map((asin) => ({
       asin,
-      source: source as 'manual' | 'import' | 'seed' | 'extension' | 'aurora',
+      source: source as 'manual' | 'import' | 'seed' | 'extension' | 'aurora' | 'selleramp',
     })))
     void reply.status(201)
     return 'asin' in body

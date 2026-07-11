@@ -1,4 +1,4 @@
-import type { Alert, AlertEvent, AlertRuleType, FinderFilters, FinderResult, Product, SeedQuery, SeedSearchResult, Settings, Snapshot, Status, SweepSummary } from './types'
+import type { Alert, AlertEvent, AlertRuleType, FinderFilters, FinderResult, Product, SeedQuery, SeedSearchResult, SellerampImportPreview, SellerampImportSummary, Settings, Snapshot, Status, SweepSummary } from './types'
 
 export class ApiError extends Error {
   constructor(message: string, readonly status: number) { super(message) }
@@ -31,6 +31,8 @@ export const api = {
   seedQueries: () => request<SeedQuery[]>('/api/seed-queries'),
   createSeedQuery: (query: string) => request<SeedQuery>('/api/seed-queries', { method: 'POST', body: JSON.stringify({ query }) }),
   patchSeedQuery: (id: number, body: Partial<Pick<SeedQuery, 'query' | 'lastRunAt'>>) => request<SeedQuery>(`/api/seed-queries/${id}`, { method: 'PATCH', body: JSON.stringify(body) }),
+  previewSelleramp: (csv: string) => request<SellerampImportPreview>('/api/import/selleramp/preview', { method: 'POST', headers: { 'Content-Type': 'text/csv' }, body: csv }),
+  importSelleramp: (csv: string) => request<SellerampImportSummary>('/api/import/selleramp', { method: 'POST', headers: { 'Content-Type': 'text/csv' }, body: csv }),
   settings: () => request<Settings>('/api/settings'),
   patchSettings: (body: Partial<Omit<Settings, 'id'>>) => request<Settings>('/api/settings', { method: 'PATCH', body: JSON.stringify(body) }),
   testNotification: () => request<{ ok: boolean }>('/api/settings/test-notification', { method: 'POST' }),

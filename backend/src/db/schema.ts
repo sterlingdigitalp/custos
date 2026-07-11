@@ -26,7 +26,7 @@ export function openDatabase(databasePath = DEFAULT_DATABASE_PATH): DatabaseHand
       rankCategory TEXT,
       addedAt TEXT NOT NULL,
       source TEXT NOT NULL CHECK (
-        source IN ('manual', 'import', 'seed', 'extension', 'aurora')
+        source IN ('manual', 'import', 'seed', 'extension', 'aurora', 'selleramp')
       ),
       isArchived INTEGER NOT NULL DEFAULT 0 CHECK (isArchived IN (0, 1))
     );
@@ -92,6 +92,43 @@ export function openDatabase(databasePath = DEFAULT_DATABASE_PATH): DatabaseHand
       ntfyServer TEXT NOT NULL DEFAULT 'https://ntfy.sh'
     );
   `)
+
+  // SQLite cannot extend a CHECK constraint in place. Rebuild early Custos
+  // product tables once so existing databases can record SellerAmp provenance.
+  const productTable = db.prepare(`
+    SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'products'
+  `).get() as { sql: string } | undefined
+  if (productTable && !productTable.sql.includes("'selleramp'")) {
+    db.transaction(() => {
+      db.exec(`
+        ALTER TABLE products RENAME TO products_before_selleramp;
+
+        CREATE TABLE products (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          asin TEXT NOT NULL UNIQUE,
+          title TEXT,
+          brand TEXT,
+          imageUrl TEXT,
+          category TEXT,
+          rankCategory TEXT,
+          addedAt TEXT NOT NULL,
+          source TEXT NOT NULL CHECK (
+            source IN ('manual', 'import', 'seed', 'extension', 'aurora', 'selleramp')
+          ),
+          isArchived INTEGER NOT NULL DEFAULT 0 CHECK (isArchived IN (0, 1))
+        );
+
+        INSERT INTO products (
+          id, asin, title, brand, imageUrl, category, rankCategory, addedAt, source, isArchived
+        )
+        SELECT
+          id, asin, title, brand, imageUrl, category, rankCategory, addedAt, source, isArchived
+        FROM products_before_selleramp;
+
+        DROP TABLE products_before_selleramp;
+      `)
+    })()
+  }
 
   // The inbox API requires read state even though the initial design's compact
   // alert_events column list omits it. Keep this guarded for early databases.

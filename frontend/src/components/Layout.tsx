@@ -8,6 +8,7 @@ const navItems = [
   { to: '/alerts', label: 'Alerts', mark: 'A' },
   { to: '/finder', label: 'Finder', mark: 'F' },
   { to: '/seed', label: 'Seed', mark: 'S' },
+  { to: '/import', label: 'Import', mark: 'I' },
   { to: '/settings', label: 'Settings', mark: '⚙' },
 ]
 
@@ -35,7 +36,7 @@ export default function Layout() {
         <button type="button" onClick={() => setMenuOpen(!menuOpen)} className="rounded-md border p-2 text-slate-600 lg:hidden" aria-label="Toggle navigation">☰</button><div className="font-bold text-ink lg:hidden">Custos</div>
         <div className="ml-auto flex items-center gap-3">{status?.scheduler.sweepRunning && <span className="hidden text-xs font-medium text-slate-500 sm:inline">Sweep running…</span>}<div data-testid="mode-banner" title={status?.client.detail} className={`flex items-center gap-2 rounded-full px-3 py-1.5 text-xs font-bold ring-1 ring-inset ${status ? (live ? 'bg-emerald-50 text-emerald-800 ring-emerald-600/25' : 'bg-slate-100 text-slate-700 ring-slate-500/20') : 'bg-red-50 text-red-800 ring-red-500/20'}`}><span className={`h-2 w-2 rounded-full ${status ? (live ? 'bg-emerald-500' : 'bg-slate-500') : 'bg-red-500'}`} />{status ? (live ? 'LIVE' : 'MOCK DATA') : 'STATUS UNKNOWN'}</div></div>
       </header>
-      {menuOpen && <nav className="border-b bg-slate-950 p-3 text-white lg:hidden" aria-label="Mobile navigation"><div className="grid grid-cols-2 gap-1 sm:grid-cols-5">{navItems.map(item => <NavLink key={item.to} to={item.to} end={item.end} onClick={() => setMenuOpen(false)} className={({ isActive }) => `rounded-md px-3 py-2 text-sm ${isActive ? 'bg-white/15' : 'text-slate-300'}`}>{item.label}</NavLink>)}</div></nav>}
+      {menuOpen && <nav className="border-b bg-slate-950 p-3 text-white lg:hidden" aria-label="Mobile navigation"><div className="grid grid-cols-2 gap-1 sm:grid-cols-6">{navItems.map(item => <NavLink key={item.to} to={item.to} end={item.end} onClick={() => setMenuOpen(false)} className={({ isActive }) => `rounded-md px-3 py-2 text-sm ${isActive ? 'bg-white/15' : 'text-slate-300'}`}>{item.label}</NavLink>)}</div></nav>}
       <main className="mx-auto max-w-[1500px] p-4 sm:p-6 lg:p-8"><Outlet /></main>
     </div>
   </div>

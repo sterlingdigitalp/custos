@@ -1,4 +1,8 @@
 import { afterEach, describe, expect, it } from 'vitest'
+import Database from 'better-sqlite3'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import {
   archiveProduct,
   bulkCreateProducts,
@@ -29,8 +33,12 @@ import { openDatabase, type DatabaseHandle } from './schema.js'
 
 describe('SQLite schema and repositories', () => {
   let db: DatabaseHandle | undefined
+  let temporaryDirectory: string | undefined
 
-  afterEach(() => db?.close())
+  afterEach(() => {
+    db?.close()
+    if (temporaryDirectory) rmSync(temporaryDirectory, { recursive: true, force: true })
+  })
 
   it('creates the schema idempotently with the settings singleton defaults', () => {
     db = openDatabase(':memory:')
@@ -49,6 +57,37 @@ describe('SQLite schema and repositories', () => {
       SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'snapshots'
     `).all() as Array<{ name: string }>
     expect(indexes.map(({ name }) => name)).toContain('snapshots_asin_ts_idx')
+  })
+
+  it('migrates the product source constraint for existing databases', () => {
+    temporaryDirectory = mkdtempSync(join(tmpdir(), 'custos-schema-'))
+    const databasePath = join(temporaryDirectory, 'custos.db')
+    const legacy = new Database(databasePath)
+    legacy.exec(`
+      CREATE TABLE products (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        asin TEXT NOT NULL UNIQUE,
+        title TEXT,
+        brand TEXT,
+        imageUrl TEXT,
+        category TEXT,
+        rankCategory TEXT,
+        addedAt TEXT NOT NULL,
+        source TEXT NOT NULL CHECK (
+          source IN ('manual', 'import', 'seed', 'extension', 'aurora')
+        ),
+        isArchived INTEGER NOT NULL DEFAULT 0 CHECK (isArchived IN (0, 1))
+      );
+      INSERT INTO products (asin, title, addedAt, source)
+      VALUES ('B0LEGACY01', 'Preserved', '2026-01-01T00:00:00.000Z', 'manual');
+    `)
+    legacy.close()
+
+    db = openDatabase(databasePath)
+    expect(getProductByAsin(db, 'B0LEGACY01')).toMatchObject({ id: 1, title: 'Preserved' })
+    expect(createProduct(db, { asin: 'B0SELLER01', source: 'selleramp' })).toMatchObject({
+      id: 2, source: 'selleramp',
+    })
   })
 
   it('creates, lists, archives, and bulk creates products while skipping existing ASINs', () => {

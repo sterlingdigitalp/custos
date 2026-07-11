@@ -1,6 +1,6 @@
 import type { DatabaseHandle } from './schema.js'
 
-export type ProductSource = 'manual' | 'import' | 'seed' | 'extension' | 'aurora'
+export type ProductSource = 'manual' | 'import' | 'seed' | 'extension' | 'aurora' | 'selleramp'
 export type AlertRuleType =
   | 'price_below'
   | 'drop_percent'

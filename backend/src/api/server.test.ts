@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   createAlert,
   createProduct,
+  getProductByAsin,
   getSettings,
   insertAlertEvent,
   insertSnapshot,
@@ -66,6 +67,69 @@ describe('Fastify API', () => {
     expect(history.statusCode).toBe(200)
     expect(history.json()).toHaveLength(1)
     expect(history.json()[0]).toMatchObject({ asin: 'A1', buyBoxPrice: 12 })
+  })
+
+  it('previews and applies a SellerAmp CSV without preview writes', async () => {
+    createProduct(db, { asin: 'B0APITEST1', title: null, source: 'manual' })
+    const csv = [
+      'asin,name,date,image,source',
+      'B0APITEST1,Existing product,,existing.jpg,selleramp',
+      'B0APITEST2,"New product, large",,new.jpg,selleramp',
+      'INVALID,Invalid row,,,selleramp',
+    ].join('\n')
+
+    const preview = await server.inject({
+      method: 'POST', url: '/api/import/selleramp/preview',
+      headers: { 'content-type': 'text/csv' }, payload: csv,
+    })
+    expect(preview.statusCode).toBe(200)
+    expect(preview.json()).toEqual({
+      newCount: 1,
+      alreadyPresent: 1,
+      skippedInvalid: 1,
+      sampleNew: [{ asin: 'B0APITEST2', name: 'New product, large' }],
+    })
+    expect(getProductByAsin(db, 'B0APITEST2')).toBeUndefined()
+
+    const applied = await server.inject({
+      method: 'POST', url: '/api/import/selleramp',
+      headers: { 'content-type': 'text/plain' }, payload: csv,
+    })
+    expect(applied.statusCode).toBe(200)
+    expect(applied.json()).toEqual({
+      imported: 1,
+      updatedMetadata: 1,
+      skippedInvalid: 1,
+      alreadyPresent: 1,
+      totalTracked: 2,
+    })
+    expect(getProductByAsin(db, 'B0APITEST1')).toMatchObject({
+      title: 'Existing product', imageUrl: 'existing.jpg', source: 'manual',
+    })
+    expect(getProductByAsin(db, 'B0APITEST2')).toMatchObject({ source: 'selleramp' })
+  })
+
+  it('returns a sweep-duration warning above 4,000 active products', async () => {
+    const insert = db.prepare(`
+      INSERT INTO products (asin, addedAt, source, isArchived) VALUES (?, ?, 'manual', 0)
+    `)
+    db.transaction(() => {
+      for (let index = 0; index < 4_000; index += 1) {
+        insert.run(`B0${String(index).padStart(8, '0')}`, NOW.toISOString())
+      }
+    })()
+
+    const response = await server.inject({
+      method: 'POST', url: '/api/import/selleramp',
+      headers: { 'content-type': 'text/csv' },
+      payload: 'asin,name,date,image,source\nB0ZZZZZZZZ,Threshold product,,,selleramp',
+    })
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toMatchObject({
+      imported: 1,
+      totalTracked: 4_001,
+      warning: expect.stringMatching(/sweep/i),
+    })
   })
 
   it('filters finder by current price and window price drop', async () => {

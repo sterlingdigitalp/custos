@@ -115,6 +115,22 @@ export interface SeedCandidate {
 export interface SeedSearchResult { items: SeedCandidate[]; nextPageToken: string | null }
 export interface SeedQuery { id: number; query: string; addedAt: string; lastRunAt: string | null }
 
+export interface SellerampImportPreview {
+  newCount: number
+  alreadyPresent: number
+  skippedInvalid: number
+  sampleNew: Array<{ asin: string; name: string }>
+}
+
+export interface SellerampImportSummary {
+  imported: number
+  updatedMetadata: number
+  skippedInvalid: number
+  alreadyPresent: number
+  totalTracked: number
+  warning?: string
+}
+
 export interface Settings {
   id: 1
   lwaClientId: string | null
