@@ -100,8 +100,21 @@ async function main() {
 
   process.on('SIGINT', () => { console.log(`\nStopped. ${seen.size} ASINs written to ${OUT}`); process.exit(0) })
 
+  // SAS's "Next" does a full page navigation, which destroys the evaluate
+  // context mid-read — so every read after a click waits out the load and
+  // retries until the page is stable.
+  const rowsWithRetry = async () => {
+    for (let attempt = 0; attempt < 6; attempt++) {
+      try {
+        const result = await page.evaluate(extractRows)
+        if (result.length > 0 || attempt >= 3) return result
+      } catch { /* navigation in flight — wait and retry */ }
+      await page.waitForTimeout(900)
+    }
+    return []
+  }
+
   while (pages < MAX_PAGES) {
-    if (pages > 0) rows = await page.evaluate(extractRows)
     const firstAsin = rows[0]?.asin
     const added = flush(rows)
     pages++
@@ -113,9 +126,10 @@ async function main() {
     ).first()
     if (!(await next.count()) || !(await next.isEnabled().catch(() => false))) break
     await next.click().catch(() => {})
-    await page.waitForTimeout(1200)
-    const newFirst = (await page.evaluate(extractRows))[0]?.asin
-    if (!newFirst || newFirst === firstAsin) break
+    await page.waitForLoadState('domcontentloaded').catch(() => {})
+    await page.waitForTimeout(700)
+    rows = await rowsWithRetry()
+    if (rows.length === 0 || rows[0]?.asin === firstAsin) break
     if (added === 0 && pages > 2) break
   }
 
