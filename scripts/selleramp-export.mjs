@@ -20,6 +20,8 @@ import { dirname, resolve } from 'node:path'
 const OUT = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'selleramp-history.csv')
 const ASIN_RE = /\bB0[A-Z0-9]{8}\b/
 const MAX_PAGES = 400 // ~4,800 rows at 12/page — well past the 2,797 target.
+// Per-page settle time. On a slow connection, run with WAIT=2500 (or higher).
+const WAIT = Number(process.env.WAIT) || 900
 
 function ask(q) {
   const rl = createInterface({ input: process.stdin, output: process.stdout })
@@ -119,7 +121,7 @@ async function main() {
         const result = await page.evaluate(extractRows)
         if (result.length > 0 || attempt >= 3) return result
       } catch { /* navigation in flight — wait and retry */ }
-      await page.waitForTimeout(900)
+      await page.waitForTimeout(WAIT)
     }
     return []
   }
@@ -137,7 +139,7 @@ async function main() {
     if (!(await next.count()) || !(await next.isEnabled().catch(() => false))) break
     await next.click().catch(() => {})
     await page.waitForLoadState('domcontentloaded').catch(() => {})
-    await page.waitForTimeout(900)
+    await page.waitForTimeout(WAIT)
     rows = await rowsWithRetry()
 
     // Only give up after several consecutive stuck pages — a single slow load
