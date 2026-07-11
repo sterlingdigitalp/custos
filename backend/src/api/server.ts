@@ -572,7 +572,9 @@ export function buildServer(db: DatabaseHandle, deps: ServerDependencies): Fasti
       clientMode: settings.lwaClientId && settings.lwaClientSecret && settings.refreshToken
         ? 'live'
         : 'mock',
-      corpusSize: listProducts(db, false).length,
+      // Actively swept products only — archived rows aren't part of the
+      // working corpus and shouldn't inflate the status panel.
+      corpusSize: listProducts(db).length,
     }
   })
 
