@@ -1,0 +1,19 @@
+{
+  "manifest_version": 3,
+  "name": "Custos",
+  "version": "1.0.0",
+  "description": "Overlay Custos price and sales-rank history on Amazon product pages.",
+  "permissions": ["storage"],
+  "host_permissions": ["http://localhost:4100/*"],
+  "content_scripts": [
+    {
+      "matches": ["*://*.amazon.com/*"],
+      "js": ["asin.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "options_page": "options.html",
+  "action": {
+    "default_title": "Custos"
+  }
+}

@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Custos options</title>
+    <style>
+      :root { color-scheme: dark; }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        min-height: 100vh;
+        display: grid;
+        place-items: start center;
+        padding: 64px 24px;
+        background: #0A110D;
+        color: #E8F0EC;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      main { width: min(520px, 100%); padding: 28px; border-radius: 16px; background: #151E1A; }
+      h1 { margin: 0 0 8px; font-size: 24px; }
+      p { margin: 0 0 24px; color: #7C8D85; line-height: 1.5; }
+      label { display: block; margin-bottom: 8px; font-size: 13px; font-weight: 700; }
+      input {
+        width: 100%;
+        border: 1px solid #23302A;
+        border-radius: 10px;
+        padding: 11px 12px;
+        background: #0E1612;
+        color: #E8F0EC;
+        font: inherit;
+        outline: none;
+      }
+      input:focus { border-color: #BEF264; }
+      .actions { display: flex; align-items: center; gap: 12px; margin-top: 18px; }
+      button {
+        border: 0;
+        border-radius: 999px;
+        padding: 10px 17px;
+        background: #BEF264;
+        color: #0A110D;
+        cursor: pointer;
+        font: 700 13px inherit;
+      }
+      #status { color: #7C8D85; font-size: 13px; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Custos</h1>
+      <p>Choose the backend used for Amazon price and sales-rank history.</p>
+      <form id="options-form">
+        <label for="backend-url">Backend URL</label>
+        <input id="backend-url" name="backendUrl" type="url" required placeholder="http://localhost:4100">
+        <div class="actions">
+          <button type="submit">Save</button>
+          <span id="status" role="status" aria-live="polite"></span>
+        </div>
+      </form>
+    </main>
+    <script src="options.js"></script>
+  </body>
+</html>
