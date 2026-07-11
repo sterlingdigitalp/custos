@@ -12,7 +12,7 @@
 // read correctly BEFORE paging through everything.
 
 import { chromium } from 'playwright'
-import { appendFileSync, writeFileSync } from 'node:fs'
+import { appendFileSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { createInterface } from 'node:readline'
 import { fileURLToPath } from 'node:url'
 import { dirname, resolve } from 'node:path'
@@ -83,8 +83,18 @@ async function main() {
   const ok = await ask('\nDoes that look right? Type "go" to walk all pages, anything else to abort: ')
   if (ok.trim().toLowerCase() !== 'go') { await browser.close(); console.log('Aborted, nothing written.'); return }
 
-  writeFileSync(OUT, 'asin,name,date,image,source\n')
+  // Resume-safe: preload ASINs already in the CSV so a re-run re-walks from
+  // page 1, skips what we have for free, and only appends genuinely new rows.
   const seen = new Set()
+  if (existsSync(OUT)) {
+    for (const line of readFileSync(OUT, 'utf8').split('\n').slice(1)) {
+      const asin = line.match(ASIN_RE)?.[0]
+      if (asin) seen.add(asin)
+    }
+    console.log(`Resuming — ${seen.size} ASINs already saved, will skip those.`)
+  } else {
+    writeFileSync(OUT, 'asin,name,date,image,source\n')
+  }
   let pages = 0
 
   const flush = (batch) => {
@@ -114,23 +124,32 @@ async function main() {
     return []
   }
 
+  let stalls = 0 // consecutive pages with no forward progress
   while (pages < MAX_PAGES) {
     const firstAsin = rows[0]?.asin
-    const added = flush(rows)
+    flush(rows)
     pages++
     process.stdout.write(`\rpage ${pages} · ${seen.size} ASINs collected`)
 
-    // Advance: try common "next" controls; stop when the page doesn't change.
     const next = page.locator(
-      'a[rel="next"], .pagination .next:not(.disabled) a, button:has-text("Next"), a:has-text("Next"), [aria-label="Next"]',
+      'a[rel="next"], .pagination .next:not(.disabled) a, li.next:not(.disabled) a, button:has-text("Next"), a:has-text("Next"), [aria-label="Next"], [aria-label="next"]',
     ).first()
     if (!(await next.count()) || !(await next.isEnabled().catch(() => false))) break
     await next.click().catch(() => {})
     await page.waitForLoadState('domcontentloaded').catch(() => {})
-    await page.waitForTimeout(700)
+    await page.waitForTimeout(900)
     rows = await rowsWithRetry()
-    if (rows.length === 0 || rows[0]?.asin === firstAsin) break
-    if (added === 0 && pages > 2) break
+
+    // Only give up after several consecutive stuck pages — a single slow load
+    // or a transiently-empty read is not the end of the list.
+    if (rows.length === 0 || rows[0]?.asin === firstAsin) {
+      stalls++
+      if (stalls >= 4) { console.log('\nNo further pages after several retries — stopping.'); break }
+      await page.waitForTimeout(1500)
+      rows = await rowsWithRetry()
+    } else {
+      stalls = 0
+    }
   }
 
   console.log(`\n\nDone. ${seen.size} ASINs written to ${OUT}`)
