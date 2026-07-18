@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import {
   createProduct,
   getMappingByAsin,
+  getMappingByCanonicalId,
   listActiveAsinsMissingMapping,
   upsertProductMapping,
 } from '../db/repo.js'
@@ -66,5 +67,16 @@ describe('registry_product_map repository', () => {
     })
 
     expect(listActiveAsinsMissingMapping(db)).toEqual(['B00ACTIVE02'])
+  })
+
+  it('resolves mappings by canonical product id', () => {
+    const prd = newId('prd', 600_100)
+    const mapping = upsertProductMapping(db, {
+      asin: 'B00CANON001',
+      canonicalProductId: prd,
+      registryVersion: 3,
+    })
+    expect(getMappingByCanonicalId(db, prd)).toEqual(mapping)
+    expect(getMappingByCanonicalId(db, newId('prd', 600_101))).toBeUndefined()
   })
 })

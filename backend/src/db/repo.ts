@@ -574,6 +574,17 @@ export function getMappingByAsin(
   return row && productMappingFromRow(row)
 }
 
+/** Resolve ASIN mapping by Hub canonical product id (prd_ ULID). */
+export function getMappingByCanonicalId(
+  db: DatabaseHandle,
+  canonicalProductId: string,
+): ProductMapping | undefined {
+  const row = db.prepare(
+    'SELECT * FROM registry_product_map WHERE canonical_product_id = ?',
+  ).get(canonicalProductId) as ProductMappingRow | undefined
+  return row && productMappingFromRow(row)
+}
+
 /** Active (non-archived) product ASINs with no registry_product_map row. */
 export function listActiveAsinsMissingMapping(db: DatabaseHandle): string[] {
   const rows = db.prepare(`

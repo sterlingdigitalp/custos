@@ -25,7 +25,10 @@ export async function registerFrontend(
   const spaIndexPath = resolve(frontendRoot, 'index.html')
   server.addHook('onSend', async (request, reply, payload) => {
     const pathname = request.url.split('?')[0]
+    // /contrib/* is a JSON service boundary (history contributions for andrew).
+    // Never fall through to SPA HTML — that was the P3 bug (200 text/html).
     const isApiRoute = pathname === '/api' || pathname.startsWith('/api/')
+      || pathname === '/contrib' || pathname.startsWith('/contrib/')
     // Asset-like paths (anything with a file extension) must 404 cleanly:
     // serving them index.html turns a missing asset into an opaque MIME-type
     // error in the browser.

@@ -115,7 +115,11 @@ everywhere. Verify P3 against andrew's validator, not just contract tests.
   per D13) + provision `history` credential on the staging Hub (D9). Verify:
   all active ASINs resolve idempotently against staging Hub; re-run is a
   no-op. (Event schemas move to P2 with their Hub validation branch, D4.)
-- **P2 — publish**: outbox + delivery worker (D5, D6); `daily_rollups` +
+- **P2 — DONE 2026-07-18** (verified E2E vs staging: 6,296/6,296 events
+  delivered — 6,288 daily rollups over the 2 completed snapshot days + 8
+  spikes; 0 poison; zero-snapshot days correctly absent; 128 tests; HUB
+  half committed on agent/history-contract e1a8c18, prod deploy pending
+  quiet window): outbox + delivery worker (D5, D6); `daily_rollups` +
   daily job wired into the scheduler loop after `deliverPending`; spike
   inference; emit both event types, self-validated against the contract
   schemas before enqueue (D4). Includes the HUB-repo half of D4 (schemas +

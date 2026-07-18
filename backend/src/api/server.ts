@@ -31,9 +31,17 @@ import {
 import type { DatabaseHandle } from '../db/schema.js'
 import { importSelleramp, parseSelleramp } from '../import/selleramp.js'
 import { loadHubConfig } from '../platform/config.js'
+import { buildHistoryContribution } from '../platform/contrib.js'
 import { RegistryClient } from '../platform/registry.js'
 import type { CustosApiClient } from '../spapi/client.js'
 import type { SchedulerController, SchedulerStatus } from '../scheduler/loop.js'
+
+/** Parse HISTORY_CONTRIB_TOKENS once at server build (D12). null = open (localhost debt). */
+function parseContribTokens(raw: string | undefined): Set<string> | null {
+  if (raw === undefined || raw.trim() === '') return null
+  const tokens = raw.split(',').map((t) => t.trim()).filter((t) => t.length > 0)
+  return tokens.length === 0 ? null : new Set(tokens)
+}
 
 type ClientDependency = CustosApiClient | (() => CustosApiClient | Promise<CustosApiClient>)
 
@@ -312,6 +320,8 @@ function finderResults(db: DatabaseHandle, body: Record<string, unknown>, now: D
 
 export function buildServer(db: DatabaseHandle, deps: ServerDependencies): FastifyInstance {
   const server = Fastify({ logger: false })
+  // D12: optional bearer allowlist. Read once; unset/empty → open (localhost debt).
+  const contribTokens = parseContribTokens(process.env.HISTORY_CONTRIB_TOKENS)
 
   server.addContentTypeParser('text/csv', { parseAs: 'string' }, (_request, body, done) => {
     done(null, body)
@@ -343,6 +353,50 @@ export function buildServer(db: DatabaseHandle, deps: ServerDependencies): Fasti
   server.setNotFoundHandler((request, reply) => {
     void reply.status(404).send({ error: `Route ${request.method} ${request.url} not found` })
   })
+
+  // History contribution endpoints (P3). HTTP 200 for ALL contribution outcomes
+  // (absent/unavailable are valid payloads — non-200 is transport failure for andrew).
+  const requireContribAuth = async (
+    request: { headers: { authorization?: string } },
+    reply: {
+      sent: boolean
+      status: (code: number) => { send: (body: unknown) => unknown }
+    },
+  ): Promise<unknown> => {
+    if (!contribTokens) return
+    const header = request.headers.authorization
+    if (typeof header !== 'string' || !header.startsWith('Bearer ')) {
+      return reply.status(401).send({ error: 'unauthorized' })
+    }
+    const token = header.slice('Bearer '.length)
+    if (!contribTokens.has(token)) {
+      return reply.status(401).send({ error: 'unauthorized' })
+    }
+  }
+
+  server.get<{ Params: { productId: string } }>(
+    '/contrib/products/:productId',
+    { preHandler: requireContribAuth },
+    async (request) => {
+      const now = deps.now?.() ?? new Date()
+      const history = buildHistoryContribution(db, { productId: request.params.productId }, { now })
+      return { history }
+    },
+  )
+
+  server.get<{ Params: { asin: string } }>(
+    '/contrib/asins/:asin',
+    { preHandler: requireContribAuth },
+    async (request) => {
+      const now = deps.now?.() ?? new Date()
+      const history = buildHistoryContribution(
+        db,
+        { asin: request.params.asin },
+        { now },
+      )
+      return { history }
+    },
+  )
 
   server.get('/api/products', async () => productsWithLatest(db))
 
