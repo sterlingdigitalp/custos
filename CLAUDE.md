@@ -1,6 +1,9 @@
 # Custos — repo notes for Claude
 
-On session start, read HANDOFF.md if present for prior-session state.
+On session start, read HANDOFF.md if present for prior-session state, and
+~/HUB/OPERATIONS.md (canonical platform ops record — topology, ports,
+runbooks, node-version rules). Update OPERATIONS.md in the same push
+whenever a change here touches shared platform state.
 
 - Custos is a personal, READ-ONLY Amazon product tracker (Keepa-style). It never
   writes to Amazon — no write path exists; keep it that way.
