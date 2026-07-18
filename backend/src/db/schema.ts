@@ -100,6 +100,64 @@ export function openDatabase(databasePath = DEFAULT_DATABASE_PATH): DatabaseHand
       created_by_us INTEGER NOT NULL DEFAULT 0 CHECK (created_by_us IN (0, 1)),
       resolved_at TEXT NOT NULL
     );
+
+    -- Transactional outbox for history events (PLATFORM-INTEGRATION.md D5).
+    -- Mirrors aurora's platform_outbox. Enqueue is a no-op without Hub config
+    -- at the call site; rows only appear when emission is gated on.
+    CREATE TABLE IF NOT EXISTS platform_outbox (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      event_id TEXT UNIQUE NOT NULL,
+      event_type TEXT NOT NULL,
+      envelope TEXT NOT NULL,
+      status TEXT NOT NULL CHECK (status IN ('pending', 'delivered', 'failed', 'poison')) DEFAULT 'pending',
+      attempts INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT,
+      next_attempt_at TEXT,
+      enqueued_at TEXT NOT NULL,
+      delivered_at TEXT,
+      sequence INTEGER
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_platform_outbox_status_next_attempt
+      ON platform_outbox (status, next_attempt_at);
+
+    -- Materialized daily market aggregates (D8). Raw snapshots remain source
+    -- of truth; rollups rebuildable by replay. date is UTC day YYYY-MM-DD.
+    CREATE TABLE IF NOT EXISTS daily_rollups (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      asin TEXT NOT NULL,
+      date TEXT NOT NULL,
+      snapshot_count INTEGER NOT NULL,
+      buybox_median_cents INTEGER,
+      buybox_min_cents INTEGER,
+      buybox_max_cents INTEGER,
+      lowest_new_median_cents INTEGER,
+      lowest_fba_median_cents INTEGER,
+      offer_count_median INTEGER,
+      fba_offer_count_median INTEGER,
+      sales_rank_median INTEGER,
+      sales_rank_min INTEGER,
+      sales_rank_max INTEGER,
+      rank_category TEXT,
+      estimated_sales INTEGER,
+      emitted_event_id TEXT,
+      computed_at TEXT NOT NULL,
+      UNIQUE(asin, date)
+    );
+
+    -- Rank-spike inference records (history.rank.spike.v1 source).
+    -- detected_at = latest snapshot ts that completed the spike pair.
+    CREATE TABLE IF NOT EXISTS history_spikes (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      asin TEXT NOT NULL,
+      detected_at TEXT NOT NULL,
+      rank_before INTEGER NOT NULL,
+      rank_after INTEGER NOT NULL,
+      rank_category TEXT,
+      improvement_percent REAL NOT NULL,
+      emitted_event_id TEXT,
+      UNIQUE(asin, detected_at)
+    );
   `)
 
   // SQLite cannot extend a CHECK constraint in place. Rebuild early Custos

@@ -9,8 +9,12 @@ import type { FastifyInstance } from 'fastify'
 import { buildServer } from './api/server.js'
 import { getSettings, listProducts } from './db/repo.js'
 import { openDatabase } from './db/schema.js'
+import { loadHubConfig } from './platform/config.js'
+import { HubDeliveryWorker } from './platform/delivery.js'
 import { startScheduler, type CustosClientFactory } from './scheduler/loop.js'
 import { createCustosClient } from './spapi/client.js'
+
+const DELIVERY_INTERVAL_MS = 60_000
 
 export async function registerFrontend(
   server: FastifyInstance,
@@ -44,7 +48,24 @@ export async function registerFrontend(
 export async function main(): Promise<void> {
   const db = openDatabase('data/custos.db')
   const clientFactory: CustosClientFactory = () => createCustosClient(getSettings(db))
-  const scheduler = startScheduler(db, clientFactory)
+
+  // Hub config: null in standalone mode → all emission/delivery is a no-op.
+  const hubConfig = loadHubConfig()
+  const deliveryWorker = hubConfig
+    ? new HubDeliveryWorker(db, { baseUrl: hubConfig.baseUrl, token: hubConfig.token })
+    : null
+
+  // Fixed 60s outbox drain, independent of the (longer) sweep cadence.
+  // unref'd so it never keeps the process alive on its own. No-op when
+  // Hub is not configured.
+  const deliveryTimer = setInterval(() => {
+    if (hubConfig && deliveryWorker) {
+      void deliveryWorker.tick().catch(() => {})
+    }
+  }, DELIVERY_INTERVAL_MS)
+  deliveryTimer.unref()
+
+  const scheduler = startScheduler(db, clientFactory, { hubConfig, deliveryWorker })
   const server = buildServer(db, { client: clientFactory, scheduler })
   const port = Number(process.env.PORT ?? 4_400)
 
@@ -54,6 +75,7 @@ export async function main(): Promise<void> {
   }
 
   const shutdown = async (): Promise<void> => {
+    clearInterval(deliveryTimer)
     scheduler.stop()
     await server.close()
     db.close()
@@ -66,7 +88,10 @@ export async function main(): Promise<void> {
   const mode = settings.lwaClientId && settings.lwaClientSecret && settings.refreshToken
     ? 'live'
     : 'mock'
-  console.log(`Custos backend listening on port ${port} — ${listProducts(db, false).length} products — ${mode} SP-API client`)
+  const hubMode = hubConfig ? 'hub-linked' : 'standalone'
+  console.log(
+    `Custos backend listening on port ${port} — ${listProducts(db, false).length} products — ${mode} SP-API client — ${hubMode}`,
+  )
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
