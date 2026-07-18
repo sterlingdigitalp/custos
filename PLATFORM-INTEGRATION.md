@@ -144,8 +144,9 @@ everywhere. Verify P3 against andrew's validator, not just contract tests.
   the Hub — no tunnel needed; platform build + prod credential + Hub
   validation live; staging-ID trap caught in the wild and purged; prod
   re-resolve 3,144/3,144 → registry 3,422 products; fleetcheck prod 2/2
-  after a CORS fix for tailnet origins; first-emission confirmation
-  pending the next sweep): original plan was `history.service` on helsinki (systemd, port 4400,
+  after a CORS fix for tailnet origins; CONFIRMED 04:47Z: 6,288/6,288
+  daily events delivered to the prod Hub, 0 poison — history is live in
+  production): original plan was `history.service` on helsinki (systemd, port 4400,
   localhost + tailnet exposure decision at deploy time); one-time
   `data/custos.db` migration; provision prod credential; fleetcheck `prod`
   target. Mac becomes dev copy. Ends the sleep-gap problem.
