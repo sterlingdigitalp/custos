@@ -327,11 +327,19 @@ export function buildServer(db: DatabaseHandle, deps: ServerDependencies): Fasti
     done(null, body)
   })
 
+  // Extra origins the SPA may be served from (Vite module scripts are
+  // crossorigin, so the app's own assets arrive WITH an Origin header —
+  // e.g. http://platform:4400 over the tailnet). Comma-separated exact origins.
+  const extraOrigins = new Set(
+    (process.env.CUSTOS_ALLOWED_ORIGINS ?? '')
+      .split(',').map((entry) => entry.trim()).filter((entry) => entry.length > 0),
+  )
   void server.register(cors, {
     methods: ['GET', 'POST', 'PATCH', 'DELETE'],
     origin(origin, callback) {
       const allowed = origin === undefined || /^chrome-extension:\/\//.test(origin) ||
-        /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/.test(origin)
+        /^https?:\/\/(?:localhost|127\.0\.0\.1)(?::\d+)?$/.test(origin) ||
+        extraOrigins.has(origin)
       callback(allowed ? null : new Error('Origin not allowed'), allowed)
     },
   })
