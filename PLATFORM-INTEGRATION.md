@@ -140,7 +140,12 @@ everywhere. Verify P3 against andrew's validator, not just contract tests.
   column `sweep` | `aurora`, plus source listing id). Verify: cursor survives
   restart; poison event doesn't wedge the loop.
 - **P5 — broker cutover** (BLOCKED on HUB PR #2): D11.
-- **P6 — VPS deploy**: `history.service` on helsinki (systemd, port 4400,
+- **P6 — DEPLOYED 2026-07-18** (custos.service on helsinki, colocated with
+  the Hub — no tunnel needed; platform build + prod credential + Hub
+  validation live; staging-ID trap caught in the wild and purged; prod
+  re-resolve 3,144/3,144 → registry 3,422 products; fleetcheck prod 2/2
+  after a CORS fix for tailnet origins; first-emission confirmation
+  pending the next sweep): original plan was `history.service` on helsinki (systemd, port 4400,
   localhost + tailnet exposure decision at deploy time); one-time
   `data/custos.db` migration; provision prod credential; fleetcheck `prod`
   target. Mac becomes dev copy. Ends the sleep-gap problem.
