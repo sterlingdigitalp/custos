@@ -1,7 +1,7 @@
 (function initializeOptions() {
   'use strict'
 
-  const DEFAULT_BACKEND_URL = 'http://localhost:4100'
+  const DEFAULT_BACKEND_URL = 'http://localhost:4400'
   const form = document.getElementById('options-form')
   const input = document.getElementById('backend-url')
   const status = document.getElementById('status')

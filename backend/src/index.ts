@@ -46,7 +46,7 @@ export async function main(): Promise<void> {
   const clientFactory: CustosClientFactory = () => createCustosClient(getSettings(db))
   const scheduler = startScheduler(db, clientFactory)
   const server = buildServer(db, { client: clientFactory, scheduler })
-  const port = Number(process.env.PORT ?? 4_100)
+  const port = Number(process.env.PORT ?? 4_400)
 
   await registerFrontend(server)
   if (!Number.isInteger(port) || port < 1 || port > 65_535) {

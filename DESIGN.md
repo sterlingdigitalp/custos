@@ -24,7 +24,7 @@ enumeration; stock estimates; any scraping of Amazon pages.
 
 Same proven stack as Aurora: Node 22 + TypeScript ESM, Fastify, SQLite
 (better-sqlite3, WAL), scheduler loop in-process; React + Vite + Tailwind SPA
-served statically by the backend. vitest. Port **4100** (Aurora owns 4000).
+served statically by the backend. vitest. Port **4400** (platform port map: aurora 4000, ledger 4100, history/custos 4400).
 Frontend may add **uPlot** for time-series charts (tiny, fast; charts are the
 core product — this is the one approved frontend dependency).
 
@@ -136,11 +136,11 @@ crashes the sweep. Alerts also surface in a web inbox (unread count).
 ## Browser extension (extension/, Chrome MV3)
 
 Content script on amazon.com product pages: extract ASIN from URL, GET
-http://localhost:4100/api/products/:asin/history — if tracked, inject a
+http://localhost:4400/api/products/:asin/history — if tracked, inject a
 compact chart panel (rendered as inline SVG from the data; no bundled chart
 lib) under the price block; if not tracked, inject a "Track in Custos"
 button that POSTs the ASIN. Options page: backend URL (default
-localhost:4100). No external requests other than the user's own backend.
+localhost:4400). No external requests other than the user's own backend.
 
 ## Verification
 

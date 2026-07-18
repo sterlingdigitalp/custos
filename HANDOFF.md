@@ -32,7 +32,7 @@ SP-API app client, isolated from the Aurora repricer (~/aurora, port 4000).
 
 ## Runtime state (matters more than git for this app)
 
-- Server: `PORT=4100 node dist/backend/src/index.js` running from
+- Server: `PORT=4400 node dist/backend/src/index.js` running from
   `/Users/sterlingdigital/custos`, **LIVE mode**, SP-API ping OK, scheduler
   running, sweepIntervalMin = 60. VERIFIED
 - **This is a plain background process — NOT a launchd/systemd service. If the
@@ -61,7 +61,7 @@ SP-API app client, isolated from the Aurora repricer (~/aurora, port 4000).
   (50/page) + lazy IntersectionObserver sparklines (concurrency cap 6). Fixed a
   2,786-request `ERR_INSUFFICIENT_RESOURCES` storm. VERIFIED
 - Restart gotcha: killing the server can leave stale node processes bound to
-  4100 (EADDRINUSE). Kill by matching: `pgrep -fl "node dist/backend/src/index.js"`
+  4400 (EADDRINUSE). Kill by matching: `pgrep -fl "node dist/backend/src/index.js"`
   then kill the PID whose `lsof` shows `/custos` (leave Aurora's on 4000 alone). VERIFIED
 
 ## 3. Feature / update backlog (ranked)
@@ -107,8 +107,8 @@ SP-API app client, isolated from the Aurora repricer (~/aurora, port 4000).
 **First action on reopen: confirm Custos is still running and sweeping.** It's a
 plain background process, so a Mac sleep/reboot silently kills it (and stops
 history collection). Run:
-`curl -s http://localhost:4100/api/status` — if it doesn't respond, restart:
-`cd /Users/sterlingdigital/custos && (PORT=4100 node dist/backend/src/index.js &)`
+`curl -s http://localhost:4400/api/status` — if it doesn't respond, restart:
+`cd /Users/sterlingdigital/custos && (PORT=4400 node dist/backend/src/index.js &)`
 then re-check `/api/status` shows `clientMode: live`, ping ok, scheduler running,
 corpus 3144. Once confirmed healthy, proceed to backlog #1 (load the extension in
 real Chrome) — the last unverified deliverable.

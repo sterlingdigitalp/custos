@@ -1,7 +1,7 @@
 (function initializeCustosOverlay() {
   'use strict'
 
-  const DEFAULT_BACKEND_URL = 'http://localhost:4100'
+  const DEFAULT_BACKEND_URL = 'http://localhost:4400'
   const HISTORY_DAYS = 90
   const PANEL_ID = 'custos-panel'
   const SVG_NS = 'http://www.w3.org/2000/svg'
