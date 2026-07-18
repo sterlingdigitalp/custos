@@ -91,6 +91,15 @@ export function openDatabase(databasePath = DEFAULT_DATABASE_PATH): DatabaseHand
       ntfyTopic TEXT,
       ntfyServer TEXT NOT NULL DEFAULT 'https://ntfy.sh'
     );
+
+    CREATE TABLE IF NOT EXISTS registry_product_map (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      asin TEXT NOT NULL UNIQUE,
+      canonical_product_id TEXT NOT NULL UNIQUE,
+      registry_version INTEGER,
+      created_by_us INTEGER NOT NULL DEFAULT 0 CHECK (created_by_us IN (0, 1)),
+      resolved_at TEXT NOT NULL
+    );
   `)
 
   // SQLite cannot extend a CHECK constraint in place. Rebuild early Custos

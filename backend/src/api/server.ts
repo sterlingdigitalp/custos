@@ -23,12 +23,15 @@ import {
   updateProduct,
   updateSeedQuery,
   updateSettings,
+  upsertProductMapping,
   type AlertRuleType,
   type CreateAlertInput,
   type Settings,
 } from '../db/repo.js'
 import type { DatabaseHandle } from '../db/schema.js'
 import { importSelleramp, parseSelleramp } from '../import/selleramp.js'
+import { loadHubConfig } from '../platform/config.js'
+import { RegistryClient } from '../platform/registry.js'
 import type { CustosApiClient } from '../spapi/client.js'
 import type { SchedulerController, SchedulerStatus } from '../scheduler/loop.js'
 
@@ -375,6 +378,42 @@ export function buildServer(db: DatabaseHandle, deps: ServerDependencies): Fasti
       asin,
       source: source as 'manual' | 'import' | 'seed' | 'extension' | 'aurora' | 'selleramp',
     })))
+    // Resolve-on-add (P1): fire-and-forget registry mapping when Hub is
+    // configured. Must never fail or delay the HTTP response (D3/D6).
+    if (products.length > 0) {
+      try {
+        const hubConfig = loadHubConfig()
+        if (hubConfig) {
+          const client = new RegistryClient(hubConfig)
+          void Promise.all(
+            products.map(async (product) => {
+              const result = await client.resolveProduct({
+                asin: product.asin,
+                title: product.title,
+              })
+              if (!result.conflict) {
+                upsertProductMapping(db, {
+                  asin: product.asin,
+                  canonicalProductId: result.productId,
+                  registryVersion: result.registryVersion,
+                  createdByUs: result.created,
+                })
+              }
+            }),
+          ).catch((err) => {
+            console.error(
+              '[platform] resolve-on-add failed:',
+              err instanceof Error ? err.message : err,
+            )
+          })
+        }
+      } catch (err) {
+        console.error(
+          '[platform] resolve-on-add skipped (config error):',
+          err instanceof Error ? err.message : err,
+        )
+      }
+    }
     void reply.status(201)
     return 'asin' in body
       ? (products[0] ?? listProducts(db, false).find((product) => product.asin === asins[0]))

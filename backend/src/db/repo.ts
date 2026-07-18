@@ -496,3 +496,92 @@ export function updateSettings(db: DatabaseHandle, changes: UpdateSettingsInput)
   db.prepare(`UPDATE settings SET ${assignments.join(', ')} WHERE id = @id`).run(values)
   return getSettings(db)
 }
+
+// --- Platform registry product map (ASIN → canonical prd_ ULID) ---
+
+export interface ProductMapping {
+  id: number
+  asin: string
+  canonicalProductId: string
+  registryVersion: number | null
+  createdByUs: boolean
+  resolvedAt: string
+}
+
+export interface UpsertProductMappingInput {
+  asin: string
+  canonicalProductId: string
+  registryVersion?: number | null
+  createdByUs?: boolean
+  resolvedAt?: string
+}
+
+interface ProductMappingRow {
+  id: number
+  asin: string
+  canonical_product_id: string
+  registry_version: number | null
+  created_by_us: number
+  resolved_at: string
+}
+
+function productMappingFromRow(row: ProductMappingRow): ProductMapping {
+  return {
+    id: row.id,
+    asin: row.asin,
+    canonicalProductId: row.canonical_product_id,
+    registryVersion: row.registry_version,
+    createdByUs: Boolean(row.created_by_us),
+    resolvedAt: row.resolved_at,
+  }
+}
+
+export function upsertProductMapping(
+  db: DatabaseHandle,
+  input: UpsertProductMappingInput,
+): ProductMapping {
+  const resolvedAt = input.resolvedAt ?? new Date().toISOString()
+  const createdByUs = input.createdByUs ? 1 : 0
+  const registryVersion = input.registryVersion ?? null
+  db.prepare(`
+    INSERT INTO registry_product_map (
+      asin, canonical_product_id, registry_version, created_by_us, resolved_at
+    ) VALUES (
+      @asin, @canonicalProductId, @registryVersion, @createdByUs, @resolvedAt
+    )
+    ON CONFLICT(asin) DO UPDATE SET
+      canonical_product_id = excluded.canonical_product_id,
+      registry_version = excluded.registry_version,
+      created_by_us = excluded.created_by_us,
+      resolved_at = excluded.resolved_at
+  `).run({
+    asin: input.asin,
+    canonicalProductId: input.canonicalProductId,
+    registryVersion,
+    createdByUs,
+    resolvedAt,
+  })
+  return getMappingByAsin(db, input.asin) as ProductMapping
+}
+
+export function getMappingByAsin(
+  db: DatabaseHandle,
+  asin: string,
+): ProductMapping | undefined {
+  const row = db.prepare(
+    'SELECT * FROM registry_product_map WHERE asin = ?',
+  ).get(asin) as ProductMappingRow | undefined
+  return row && productMappingFromRow(row)
+}
+
+/** Active (non-archived) product ASINs with no registry_product_map row. */
+export function listActiveAsinsMissingMapping(db: DatabaseHandle): string[] {
+  const rows = db.prepare(`
+    SELECT p.asin AS asin
+    FROM products p
+    LEFT JOIN registry_product_map m ON m.asin = p.asin
+    WHERE p.isArchived = 0 AND m.asin IS NULL
+    ORDER BY p.asin
+  `).all() as Array<{ asin: string }>
+  return rows.map((row) => row.asin)
+}
