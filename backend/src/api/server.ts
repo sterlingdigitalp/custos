@@ -30,6 +30,7 @@ import {
 } from '../db/repo.js'
 import type { DatabaseHandle } from '../db/schema.js'
 import { importSelleramp, parseSelleramp } from '../import/selleramp.js'
+import { importKeepaStats, previewKeepaStats } from '../keepa/stats-import.js'
 import { loadHubConfig } from '../platform/config.js'
 import { buildHistoryContribution } from '../platform/contrib.js'
 import { RegistryClient } from '../platform/registry.js'
@@ -425,6 +426,22 @@ export function buildServer(db: DatabaseHandle, deps: ServerDependencies): Fasti
     if (typeof request.body !== 'string') throw new ApiError('Request body must be CSV text')
     return importSelleramp(db, request.body)
   })
+
+  // Track A Keepa Product Viewer stats (KEEPA-BACKFILL.md K7).
+  server.post(
+    '/api/import/keepa-stats',
+    { bodyLimit: 20 * 1024 * 1024 },
+    async (request) => {
+      if (typeof request.body !== 'string') throw new ApiError('Request body must be CSV text')
+      const modeRaw = (request.query as { mode?: unknown } | undefined)?.mode
+      const mode = typeof modeRaw === 'string' ? modeRaw.toLowerCase() : 'preview'
+      if (mode !== 'preview' && mode !== 'apply') {
+        throw new ApiError("mode must be 'preview' or 'apply'")
+      }
+      if (mode === 'preview') return previewKeepaStats(db, request.body)
+      return importKeepaStats(db, request.body, { now: deps.now })
+    },
+  )
 
   server.post('/api/products', async (request, reply) => {
     const body = bodyRecord(request.body)

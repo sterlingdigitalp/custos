@@ -132,6 +132,47 @@ describe('Fastify API', () => {
     })
   })
 
+  it('previews and applies Keepa stats CSV via mode query param', async () => {
+    createProduct(db, { asin: 'B0KEEPA001', source: 'manual' })
+    const csv = [
+      'asin,buybox_90_min,buybox_90_max,buybox_90_avg',
+      'B0KEEPA001,10.00,20.00,15.00',
+      'B0UNKNOW01,1,2,3',
+    ].join('\n')
+
+    const preview = await server.inject({
+      method: 'POST',
+      url: '/api/import/keepa-stats?mode=preview',
+      headers: { 'content-type': 'text/csv' },
+      payload: csv,
+    })
+    expect(preview.statusCode).toBe(200)
+    expect(preview.json()).toMatchObject({
+      mode: 'preview',
+      knownAsinCount: 1,
+      unknownAsinCount: 1,
+      statsRowsWouldWrite: 1,
+    })
+    expect(db.prepare('SELECT COUNT(*) AS n FROM keepa_stats').get()).toEqual({ n: 0 })
+
+    const applied = await server.inject({
+      method: 'POST',
+      url: '/api/import/keepa-stats?mode=apply',
+      headers: { 'content-type': 'text/csv' },
+      payload: csv,
+    })
+    expect(applied.statusCode).toBe(200)
+    expect(applied.json()).toMatchObject({
+      mode: 'apply',
+      upserted: 1,
+      unknownAsinSkipped: 1,
+    })
+    const row = db.prepare(
+      "SELECT min_cents, max_cents, avg_cents FROM keepa_stats WHERE asin = 'B0KEEPA001'",
+    ).get() as { min_cents: number; max_cents: number; avg_cents: number }
+    expect(row).toEqual({ min_cents: 1000, max_cents: 2000, avg_cents: 1500 })
+  })
+
   it('filters finder by current price and window price drop', async () => {
     createProduct(db, { asin: 'DROP', category: 'Tools' })
     createProduct(db, { asin: 'FLAT', category: 'Tools' })

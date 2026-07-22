@@ -158,6 +158,53 @@ export function openDatabase(databasePath = DEFAULT_DATABASE_PATH): DatabaseHand
       emitted_event_id TEXT,
       UNIQUE(asin, detected_at)
     );
+
+    -- Keepa historical backfill (KEEPA-BACKFILL.md K1). Never mixes into snapshots.
+    CREATE TABLE IF NOT EXISTS keepa_raw (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      asin TEXT NOT NULL UNIQUE,
+      domain INTEGER NOT NULL,
+      fetched_at TEXT NOT NULL,
+      tokens_cost INTEGER,
+      payload BLOB NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS keepa_points (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      asin TEXT NOT NULL,
+      metric TEXT NOT NULL CHECK (
+        metric IN ('amazon', 'new', 'new_fba', 'buybox', 'salesrank', 'offercount')
+      ),
+      ts TEXT NOT NULL,
+      value INTEGER NOT NULL,
+      UNIQUE(asin, metric, ts)
+    );
+
+    CREATE INDEX IF NOT EXISTS keepa_points_asin_metric_ts_idx
+      ON keepa_points (asin, metric, ts);
+
+    CREATE TABLE IF NOT EXISTS keepa_stats (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      asin TEXT NOT NULL,
+      window TEXT NOT NULL,
+      metric TEXT NOT NULL,
+      min_cents INTEGER,
+      max_cents INTEGER,
+      avg_cents INTEGER,
+      extra_json TEXT,
+      imported_at TEXT NOT NULL,
+      UNIQUE(asin, window, metric)
+    );
+
+    CREATE TABLE IF NOT EXISTS keepa_checkpoint (
+      asin TEXT PRIMARY KEY,
+      status TEXT NOT NULL CHECK (
+        status IN ('pending', 'done', 'failed', 'not_found')
+      ),
+      tokens_spent INTEGER,
+      last_error TEXT,
+      updated_at TEXT NOT NULL
+    );
   `)
 
   // SQLite cannot extend a CHECK constraint in place. Rebuild early Custos
