@@ -188,20 +188,20 @@ export async function runKeepaBackfill(
       }
     }
 
-    // Token pacing before next batch.
+    // Token pacing before next batch. Keepa fires any request while the
+    // balance is POSITIVE (cost may drive it negative, repaid at refillRate),
+    // so optimal cadence waits only for balance > 0 — NOT for the full
+    // next-batch cost. Waiting for full cost halves throughput (observed
+    // live 2026-07-23: 11/hr vs the correct 21.4/hr).
     const remaining = work.length - (offset + batch.length)
     if (remaining > 0) {
-      const nextBatch = Math.min(batchSize, remaining)
-      const estimatedCost = avgTokensPerAsin() * nextBatch
       const tokensLeft = response.tokensLeft
-      if (tokensLeft < estimatedCost) {
-        const deficit = estimatedCost - tokensLeft
+      if (tokensLeft <= 0) {
         const refillRate = Math.max(response.refillRate, 0.0001) // tokens per minute
-        const waitMinutes = deficit / refillRate
+        const waitMinutes = (1 - tokensLeft) / refillRate
         const waitMs = Math.ceil(waitMinutes * 60_000) + 5_000
         log(
-          `keepa-backfill: pacing — tokensLeft=${tokensLeft} need~${estimatedCost.toFixed(1)}; ` +
-          `sleep ${Math.ceil(waitMs / 1000)}s`,
+          `keepa-backfill: pacing — tokensLeft=${tokensLeft}; sleep ${Math.ceil(waitMs / 1000)}s until balance positive`,
         )
         await sleep(waitMs)
       }

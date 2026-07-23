@@ -193,10 +193,11 @@ describe('runKeepaBackfill', () => {
       sleep: async (ms) => { sleeps.push(ms) },
     })
 
-    // deficit for next batch (1 asin * 2 tokens) - 0 left = 2 tokens
-    // waitMinutes = 2 / 1 = 2 → 120_000ms + 5_000 = 125_000
+    // Positive-balance pacing: tokensLeft=0 → wait (1 - 0)/1 = 1 minute
+    // → 60_000ms + 5_000 = 65_000. (Keepa fires any request while balance
+    // is positive; never wait for the full next-batch cost.)
     expect(sleeps.length).toBeGreaterThanOrEqual(1)
-    expect(sleeps[0]).toBe(125_000)
+    expect(sleeps[0]).toBe(65_000)
   })
 
   it('sleeps refillIn+5s on tokens-exhausted then retries batch', async () => {
