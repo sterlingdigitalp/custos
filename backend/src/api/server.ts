@@ -12,6 +12,7 @@ import {
   deleteProduct,
   deleteSeedQuery,
   getAlertById,
+  getProductByAsin,
   getProductById,
   getSettings,
   listAlertEvents,
@@ -30,6 +31,7 @@ import {
 } from '../db/repo.js'
 import type { DatabaseHandle } from '../db/schema.js'
 import { importSelleramp, parseSelleramp } from '../import/selleramp.js'
+import { computeCeilings } from '../keepa/ceilings.js'
 import { importKeepaStats, previewKeepaStats } from '../keepa/stats-import.js'
 import { loadHubConfig } from '../platform/config.js'
 import { buildHistoryContribution } from '../platform/contrib.js'
@@ -113,6 +115,22 @@ function normalizedAsin(value: unknown, key = 'asin'): string {
 
 function asinList(value: unknown): string[] {
   if (!Array.isArray(value) || !value.every((asin) => typeof asin === 'string' && asin.trim() !== '')) {
+    throw new ApiError('asins must be an array of non-empty strings')
+  }
+  return [...new Set(value.map((asin) => normalizedAsin(asin)))]
+}
+
+const CEILINGS_BATCH_MAX = 500
+
+/** CONTRIB-CEILING-CONTRACT.md: batch cap ≤500/request. */
+function ceilingsAsinList(value: unknown): string[] {
+  if (!Array.isArray(value) || value.length === 0) {
+    throw new ApiError('asins must be a non-empty array of strings')
+  }
+  if (value.length > CEILINGS_BATCH_MAX) {
+    throw new ApiError(`asins must contain at most ${CEILINGS_BATCH_MAX} entries`)
+  }
+  if (!value.every((asin) => typeof asin === 'string' && asin.trim() !== '')) {
     throw new ApiError('asins must be an array of non-empty strings')
   }
   return [...new Set(value.map((asin) => normalizedAsin(asin)))]
@@ -404,6 +422,43 @@ export function buildServer(db: DatabaseHandle, deps: ServerDependencies): Fasti
         { now },
       )
       return { history }
+    },
+  )
+
+  // Documented-ceiling contract for Aurora (CONTRIB-CEILING-CONTRACT.md,
+  // frozen). Same bearer auth as /contrib/products|asins. Always HTTP 200 —
+  // an untracked/no-history ASIN still returns a well-formed gap object.
+  server.get<{ Params: { asin: string } }>(
+    '/contrib/ceilings/:asin',
+    { preHandler: requireContribAuth },
+    async (request) => {
+      const now = deps.now?.() ?? new Date()
+      const asin = normalizedAsin(request.params.asin)
+      return computeCeilings(db, asin, { now, sweepIntervalMin: getSettings(db).sweepIntervalMin })
+    },
+  )
+
+  server.post(
+    '/contrib/ceilings',
+    { preHandler: requireContribAuth },
+    async (request) => {
+      const body = bodyRecord(request.body)
+      rejectUnknownFields(body, ['asins'])
+      const asins = ceilingsAsinList(body.asins)
+      const now = deps.now?.() ?? new Date()
+      const sweepIntervalMin = getSettings(db).sweepIntervalMin
+
+      const unknown: string[] = []
+      const ceilings: ReturnType<typeof computeCeilings>[] = []
+      for (const asin of asins) {
+        if (!getProductByAsin(db, asin)) {
+          unknown.push(asin)
+          continue
+        }
+        ceilings.push(computeCeilings(db, asin, { now, sweepIntervalMin }))
+      }
+
+      return { requestedAt: now.toISOString(), ceilings, unknown }
     },
   )
 

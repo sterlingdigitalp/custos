@@ -232,4 +232,91 @@ describe('Fastify API', () => {
       asins: 1, offersFetched: 1, catalogFetched: 1, bothMissed: 0, alertsFired: 1,
     })
   })
+
+  describe('/contrib/ceilings (CONTRIB-CEILING-CONTRACT.md)', () => {
+    function seedBuybox(asin: string, count: number, lastDaysAgo = 1): void {
+      const DAY_MS = 86_400_000
+      for (let i = 0; i < count; i += 1) {
+        const tsMs = NOW.getTime() - (lastDaysAgo + (count - 1 - i) * 5) * DAY_MS
+        db.prepare(`
+          INSERT INTO keepa_points (asin, metric, ts, value) VALUES (?, 'buybox', ?, ?)
+        `).run(asin, new Date(tsMs).toISOString(), 5_000)
+      }
+    }
+
+    it('GET /contrib/ceilings/:asin returns a well-formed gap object for an untracked ASIN (still 200)', async () => {
+      const res = await server.inject({ method: 'GET', url: '/contrib/ceilings/B0UNKNOWN1' })
+      expect(res.statusCode).toBe(200)
+      const body = res.json()
+      expect(body).toMatchObject({
+        asin: 'B0UNKNOWN1',
+        provenance: 'none',
+        coverage: { historyStart: null, historyEnd: null, buyboxPoints: 0, confident: false },
+        amazonPresence90d: null,
+      })
+      expect(body.buyboxCeiling).toEqual({
+        method: 'sustained_dwell_v1',
+        sustained1y: null, sustainedAllTime: null, absolute1y: null, absoluteAllTime: null,
+      })
+    })
+
+    it('GET /contrib/ceilings/:asin returns confident:true Money-shaped fields for a well-observed ASIN', async () => {
+      createProduct(db, { asin: 'B0CONFIDNT' })
+      seedBuybox('B0CONFIDNT', 35)
+      const res = await server.inject({ method: 'GET', url: '/contrib/ceilings/B0CONFIDNT' })
+      expect(res.statusCode).toBe(200)
+      const body = res.json()
+      expect(body.coverage.confident).toBe(true)
+      expect(body.buyboxCeiling.sustained1y).toEqual({ amount: '50.00', currency: 'USD' })
+    })
+
+    it('POST /contrib/ceilings batch separates never-seen ASINs (unknown[]) from tracked-but-gap ASINs (confident:false)', async () => {
+      createProduct(db, { asin: 'B0TRACKED1' }) // tracked, but zero Keepa/sweep history
+      createProduct(db, { asin: 'B0TRACKED2' })
+      seedBuybox('B0TRACKED2', 35)
+
+      const res = await server.inject({
+        method: 'POST', url: '/contrib/ceilings',
+        payload: { asins: ['B0TRACKED1', 'B0TRACKED2', 'B0NEVERSEEN'] },
+      })
+      expect(res.statusCode).toBe(200)
+      const body = res.json()
+      expect(body.requestedAt).toBe(NOW.toISOString())
+      expect(body.unknown).toEqual(['B0NEVERSEEN'])
+      expect(body.ceilings).toHaveLength(2)
+
+      const tracked1 = body.ceilings.find((c: { asin: string }) => c.asin === 'B0TRACKED1')
+      const tracked2 = body.ceilings.find((c: { asin: string }) => c.asin === 'B0TRACKED2')
+      expect(tracked1.coverage).toMatchObject({ buyboxPoints: 0, confident: false })
+      expect(tracked1.notes).toMatch(/keepa gap/)
+      expect(tracked2.coverage.confident).toBe(true)
+      expect(tracked2.notes).toBeNull()
+    })
+
+    it('POST /contrib/ceilings rejects a batch over the 500-ASIN cap', async () => {
+      const asins = Array.from({ length: 501 }, (_, i) => `B0${String(i).padStart(8, '0')}`)
+      const res = await server.inject({
+        method: 'POST', url: '/contrib/ceilings', payload: { asins },
+      })
+      expect(res.statusCode).toBe(400)
+    })
+
+    it('requires Authorization bearer when HISTORY_CONTRIB_TOKENS is set (same gate as /contrib/products)', async () => {
+      await server.close()
+      const saved = process.env.HISTORY_CONTRIB_TOKENS
+      process.env.HISTORY_CONTRIB_TOKENS = 'secret-a'
+      server = buildServer(db, {
+        client, scheduler: { getStatus: () => stoppedStatus }, now: () => NOW,
+      })
+      const noAuth = await server.inject({ method: 'GET', url: '/contrib/ceilings/B0ANY00001' })
+      expect(noAuth.statusCode).toBe(401)
+      const ok = await server.inject({
+        method: 'GET', url: '/contrib/ceilings/B0ANY00001',
+        headers: { authorization: 'Bearer secret-a' },
+      })
+      expect(ok.statusCode).toBe(200)
+      if (saved === undefined) delete process.env.HISTORY_CONTRIB_TOKENS
+      else process.env.HISTORY_CONTRIB_TOKENS = saved
+    })
+  })
 })

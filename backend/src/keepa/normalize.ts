@@ -43,7 +43,11 @@ export interface KeepaProductLike {
  * - Pair series: [keepaMinutes, value, ...]
  * - BUY_BOX_SHIPPING (index 18): [keepaMinutes, priceCents, shippingCents, ...]
  *   landed value = price + shipping (shipping -1 treated as 0)
- * - value/price -1 → omit (absent ≠ zero)
+ * - value/price -1 → EMITTED as an explicit terminator point (value = -1),
+ *   marking "the metric became absent here" (KEEPA-BACKFILL.md K6.0).
+ *   -1 is unambiguous: no metric has a legitimate -1 (prices/ranks/counts
+ *   are all >= 0). Downstream step-series code treats a segment whose
+ *   START point is -1 as a GAP (zero dwell).
  * - Consecutive same-timestamp entries keep the LAST value
  */
 export function normalizeKeepaProduct(product: KeepaProductLike): KeepaPoint[] {
@@ -74,13 +78,12 @@ export function normalizeKeepaProduct(product: KeepaProductLike): KeepaPoint[] {
   return points
 }
 
-/** Decode pair series; omit -1; consecutive same-ts keep last. */
+/** Decode pair series; -1 becomes a terminator point; consecutive same-ts keep last. */
 function decodePairs(series: number[]): Array<[number, number]> {
   const out: Array<[number, number]> = []
   for (let i = 0; i + 1 < series.length; i += 2) {
     const keepaMinutes = series[i]!
     const value = series[i + 1]!
-    if (value === -1) continue
     if (out.length > 0 && out[out.length - 1]![0] === keepaMinutes) {
       out[out.length - 1] = [keepaMinutes, value]
     } else {
@@ -92,7 +95,8 @@ function decodePairs(series: number[]): Array<[number, number]> {
 
 /**
  * Decode BUY_BOX_SHIPPING triplets.
- * Omit when price === -1. Landed = price + max(shipping, 0) when shipping is -1.
+ * price === -1 → terminator point (value -1), regardless of shipping.
+ * Otherwise landed = price + max(shipping, 0) when shipping is -1.
  */
 function decodeTriplets(series: number[]): Array<[number, number]> {
   const out: Array<[number, number]> = []
@@ -100,8 +104,7 @@ function decodeTriplets(series: number[]): Array<[number, number]> {
     const keepaMinutes = series[i]!
     const price = series[i + 1]!
     const shipping = series[i + 2]!
-    if (price === -1) continue
-    const landed = price + (shipping === -1 ? 0 : shipping)
+    const landed = price === -1 ? -1 : price + (shipping === -1 ? 0 : shipping)
     if (out.length > 0 && out[out.length - 1]![0] === keepaMinutes) {
       out[out.length - 1] = [keepaMinutes, landed]
     } else {
