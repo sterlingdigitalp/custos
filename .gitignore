@@ -8,3 +8,4 @@ dist/
 data/
 selleramp-history.csv
 *.csv
+.handoff-auto.md
