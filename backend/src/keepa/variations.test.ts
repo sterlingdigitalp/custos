@@ -6,24 +6,37 @@ import { openDatabase, type DatabaseHandle } from '../db/schema.js'
 import {
   INTERESTING_SIZES_M,
   INTERESTING_SIZES_W,
+  detectGenderFromCategoryTree,
   detectGenderFromTitle,
-  inferGenderFromSizes,
   mineVariationCandidates,
   normalizeSize,
-  validateGenderInference,
+  validateGenderSignals,
 } from './variations.js'
 
 function variation(asin: string, size: string): Record<string, unknown> {
   return { asin, attributes: [{ dimension: 'Size', value: size }] }
 }
 
+function categoryTree(...names: string[]): Array<{ name: string }> {
+  return names.map((name) => ({ name }))
+}
+
 function insertRaw(
   db: DatabaseHandle,
   asin: string,
-  title: string | null,
-  variations: Array<Record<string, unknown>>,
+  opts: {
+    title?: string | null
+    categoryTree?: unknown
+    variations?: Array<Record<string, unknown>>
+  } = {},
 ): void {
-  const product = { asin, title, variations, csv: new Array(36).fill(null) }
+  const product = {
+    asin,
+    title: opts.title ?? null,
+    categoryTree: opts.categoryTree ?? null,
+    variations: opts.variations ?? [],
+    csv: new Array(36).fill(null),
+  }
   const payload = gzipSync(Buffer.from(JSON.stringify(product), 'utf8'))
   db.prepare(`
     INSERT INTO keepa_raw (asin, domain, fetched_at, tokens_cost, payload)
@@ -76,58 +89,104 @@ describe('detectGenderFromTitle', () => {
   })
 })
 
-describe('inferGenderFromSizes', () => {
-  it('infers M when max size >= 12.5', () => {
-    expect(inferGenderFromSizes([9.5, 12, 13])).toBe('M')
+describe('detectGenderFromCategoryTree', () => {
+  it('classifies a Men node as M', () => {
+    expect(
+      detectGenderFromCategoryTree(
+        categoryTree('Clothing, Shoes & Jewelry', 'Men', 'Shoes', 'Athletic', 'Running', 'Road Running'),
+      ),
+    ).toBe('M')
   })
 
-  it('infers W when max size <= 10.5', () => {
-    expect(inferGenderFromSizes([7, 8, 10.5])).toBe('W')
+  it('classifies a Women node as W', () => {
+    expect(
+      detectGenderFromCategoryTree(categoryTree('Clothing, Shoes & Jewelry', 'Women', 'Shoes')),
+    ).toBe('W')
   })
 
-  it('is ambiguous (null) between the thresholds', () => {
-    expect(inferGenderFromSizes([11])).toBeNull()
+  it('classifies a Girls node as W and a Boys node as M', () => {
+    expect(detectGenderFromCategoryTree(categoryTree('Clothing, Shoes & Jewelry', 'Girls', 'Shoes'))).toBe('W')
+    expect(detectGenderFromCategoryTree(categoryTree('Clothing, Shoes & Jewelry', 'Boys', 'Shoes'))).toBe('M')
   })
 
-  it('is ambiguous (null) with no sizes', () => {
-    expect(inferGenderFromSizes([])).toBeNull()
+  it('never classifies a tree containing Women as M, even if a Men node is also present', () => {
+    expect(
+      detectGenderFromCategoryTree(
+        categoryTree('Clothing, Shoes & Jewelry', 'Novelty', 'Men', 'Women', 'Costumes'),
+      ),
+    ).toBe('W')
+  })
+
+  it('returns null for a tree with no gender node', () => {
+    expect(detectGenderFromCategoryTree(categoryTree('Clothing, Shoes & Jewelry', 'Shoes', 'Athletic'))).toBeNull()
+  })
+
+  it('returns null for non-array input', () => {
+    expect(detectGenderFromCategoryTree(null)).toBeNull()
+    expect(detectGenderFromCategoryTree(undefined)).toBeNull()
+    expect(detectGenderFromCategoryTree('Men')).toBeNull()
+    expect(detectGenderFromCategoryTree({ name: 'Men' })).toBeNull()
   })
 })
 
-describe('validateGenderInference', () => {
+describe('validateGenderSignals', () => {
   let db: DatabaseHandle
   beforeEach(() => { db = openDatabase(':memory:') })
   afterEach(() => db.close())
 
-  it('measures >= 0.85 accuracy against known-gender families', () => {
-    // 8 men families the size rule gets right (max size >= 12.5).
-    for (let i = 0; i < 8; i += 1) {
-      insertRaw(db, `B0MENOK${String(i).padStart(3, '0')}`, 'Nike Air Mens Runner', [
-        variation(`B0MENOKA${i}`, '9'),
-        variation(`B0MENOKB${i}`, String(12.5 + i * 0.5)),
-      ])
-    }
-    // 8 women families the size rule gets right (max size <= 10.5).
-    for (let i = 0; i < 8; i += 1) {
-      insertRaw(db, `B0WOMOK${String(i).padStart(3, '0')}`, 'Nike Air Womens Runner', [
-        variation(`B0WOMOKA${i}`, '6'),
-        variation(`B0WOMOKB${i}`, String(7 + i * 0.5)),
-      ])
-    }
-    // 2 men families the size rule gets WRONG (narrow-max, reads as W).
-    for (let i = 0; i < 2; i += 1) {
-      insertRaw(db, `B0MENBAD${String(i).padStart(3, '0')}`, 'Nike Air Mens Narrow', [
-        variation(`B0MENBADA${i}`, '8'),
-        variation(`B0MENBADB${i}`, '10'),
-      ])
-    }
+  it('reports coverage and agreement between categoryTree and title', () => {
+    const oneSibling = [variation('B0SIB0000001', '10')]
 
-    const result = validateGenderInference(db)
-    expect(result.totalKnown).toBe(18)
-    expect(result.applicable).toBe(18)
-    expect(result.correct).toBe(16)
-    expect(result.accuracy).toBeCloseTo(16 / 18, 5)
-    expect(result.accuracy).toBeGreaterThanOrEqual(0.85)
+    // 3 families where both signals agree.
+    insertRaw(db, 'B0AGREE0001', {
+      title: 'Nike Mens Runner', categoryTree: categoryTree('Men'), variations: oneSibling,
+    })
+    insertRaw(db, 'B0AGREE0002', {
+      title: 'Nike Womens Runner', categoryTree: categoryTree('Women'), variations: oneSibling,
+    })
+    insertRaw(db, 'B0AGREE0003', {
+      title: 'Nike Mens Runner 2', categoryTree: categoryTree('Men'), variations: oneSibling,
+    })
+
+    // 1 family where the signals disagree.
+    insertRaw(db, 'B0DISAGREE1', {
+      title: 'Nike Mens Runner', categoryTree: categoryTree('Women'), variations: oneSibling,
+    })
+
+    // 2 categoryTree-only families.
+    insertRaw(db, 'B0CATONLY01', {
+      title: 'Air Max 90', categoryTree: categoryTree('Men'), variations: oneSibling,
+    })
+    insertRaw(db, 'B0CATONLY02', {
+      title: 'Air Max 91', categoryTree: categoryTree('Women'), variations: oneSibling,
+    })
+
+    // 2 title-only families.
+    insertRaw(db, 'B0TITONLY01', {
+      title: 'Nike Womens Runner', categoryTree: null, variations: oneSibling,
+    })
+    insertRaw(db, 'B0TITONLY02', {
+      title: 'Nike Mens Runner', categoryTree: categoryTree('Shoes'), variations: oneSibling,
+    })
+
+    // 1 family with neither signal.
+    insertRaw(db, 'B0NEITHER01', {
+      title: 'Classic Runner', categoryTree: categoryTree('Shoes'), variations: oneSibling,
+    })
+
+    const result = validateGenderSignals(db)
+    expect(result.familiesWithBoth).toBe(4)
+    expect(result.agreement).toBe(3)
+    expect(result.agreementRate).toBeCloseTo(0.75, 5)
+    expect(result.categoryOnly).toBe(2)
+    expect(result.titleOnly).toBe(2)
+    expect(result.neither).toBe(1)
+  })
+
+  it('ignores families with no usable sibling sizes', () => {
+    insertRaw(db, 'B0EMPTYFAM1', { title: 'Nike Mens Runner', categoryTree: categoryTree('Men'), variations: [] })
+    const result = validateGenderSignals(db)
+    expect(result.familiesWithBoth + result.categoryOnly + result.titleOnly + result.neither).toBe(0)
   })
 })
 
@@ -136,44 +195,51 @@ describe('mineVariationCandidates', () => {
   beforeEach(() => { db = openDatabase(':memory:') })
   afterEach(() => db.close())
 
-  it('mines interesting-size siblings, infers ambiguous-title gender, excludes tracked/harvested, dedupes', () => {
-    // P1: men's family (title-determined gender).
-    insertRaw(db, 'B0MPARENT1', 'Nike Downshifter 12 Mens', [
-      variation('B0MPARENT1', '12'), // self-reference — excluded
-      variation('B0MSIB0009', '9'), // not interesting
-      variation('B0MSIB0095', '9.5'), // interesting, new
-      variation('B0MSIB0100', '10'), // interesting, ALREADY TRACKED
-      variation('B0MSIB0105', '10.5'), // interesting, new
-      variation('B0MSIB0110', '11'), // interesting, ALREADY HARVESTED
-      variation('B0MSIB0120', '12'), // interesting, new
-      variation('B0MSIB0130', '13'), // not interesting
-    ])
+  it('mines interesting-size siblings using categoryTree-first gender resolution, excludes tracked/harvested, dedupes', () => {
+    // F1: categoryTree AND title agree (Men) — categoryTree wins the
+    // resolution race, so this counts as genderFromCategory not genderFromTitle.
+    insertRaw(db, 'B0MPARENT1', {
+      title: 'Nike Downshifter 12 Mens',
+      categoryTree: categoryTree('Clothing, Shoes & Jewelry', 'Men', 'Shoes'),
+      variations: [
+        variation('B0MPARENT1', '12'), // self-reference — excluded
+        variation('B0MSIB0009', '9'), // not interesting
+        variation('B0MSIB0095', '9.5'), // interesting, new
+        variation('B0MSIB0100', '10'), // interesting, ALREADY TRACKED
+        variation('B0MSIB0105', '10.5'), // interesting, new
+        variation('B0MSIB0110', '11'), // interesting, ALREADY HARVESTED
+        variation('B0MSIB0120', '12'), // interesting, new
+        variation('B0MSIB0130', '13'), // not interesting
+      ],
+    })
 
-    // P2: women's family (title-determined gender).
-    insertRaw(db, 'B0WPARENT1', "NIKE W Free Metcon 5, Women's Sneaker", [
-      variation('B0WSIB0007', '7'), // not interesting
-      variation('B0WSIB0075', '7.5'), // interesting, new
-      variation('B0WSIB0080', '8'), // interesting, new
-      variation('B0WSIB0085', '8.5'), // interesting, new
-      variation('B0WSIB0090', '9'), // interesting, new
-      variation('B0WSIB0100', '10'), // not interesting for W
-    ])
+    // F2: no categoryTree, title-only resolution (Women).
+    insertRaw(db, 'B0WPARENT1', {
+      title: "NIKE W Free Metcon 5, Women's Sneaker",
+      categoryTree: null,
+      variations: [
+        variation('B0WSIB0007', '7'), // not interesting
+        variation('B0WSIB0075', '7.5'), // interesting, new
+        variation('B0WSIB0080', '8'), // interesting, new
+        variation('B0WSIB0085', '8.5'), // interesting, new
+        variation('B0WSIB0090', '9'), // interesting, new
+        variation('B0WSIB0100', '10'), // not interesting for W
+      ],
+    })
 
-    // P3: ambiguous title, gender INFERRED as M (max size 13 >= 12.5).
-    // Includes a duplicate of P1's B0MSIB0095 candidate (dedupe test).
-    insertRaw(db, 'B0AMBGINFR', 'Air Max 90', [
-      variation('B0MSIB0095', '9.5'), // interesting for M, dup of P1's candidate
-      variation('B0AISIB0012', '12'), // interesting for M, new
-      variation('B0AISIB0130', '13'), // not interesting for M
-    ])
+    // F5: no usable siblings — scanned but not a "family with sizes".
+    insertRaw(db, 'B0NOVARIAT', { title: 'Something Else', categoryTree: null, variations: [] })
 
-    // P4: ambiguous title, gender inference also ambiguous (max size 11) — skipped entirely.
-    insertRaw(db, 'B0AMBGSKIP', 'Classic Runner', [
-      variation('B0ZSIB0011', '11'),
-    ])
-
-    // P5: no usable siblings (empty variations) — scanned but not a "family with sizes".
-    insertRaw(db, 'B0NOVARIAT', 'Something Else', [])
+    // F_dup: categoryTree-only (no title), resolves Men. Includes a
+    // duplicate of F1's B0MSIB0095 candidate (dedupe test) plus one new ASIN.
+    insertRaw(db, 'B0DUPPARENT', {
+      title: null,
+      categoryTree: categoryTree('Men'),
+      variations: [
+        variation('B0MSIB0095', '9.5'), // dup of F1's candidate
+        variation('B0DUPSIB012', '12'), // interesting, new
+      ],
+    })
 
     // Already-tracked / already-harvested exclusions.
     createProduct(db, { asin: 'B0MSIB0100', source: 'manual' })
@@ -184,20 +250,20 @@ describe('mineVariationCandidates', () => {
 
     const { candidates, stats } = mineVariationCandidates(db)
 
-    expect(stats.payloadsScanned).toBe(5)
-    expect(stats.familiesWithSizes).toBe(4)
-    expect(stats.genderFromTitle).toBe(2)
-    expect(stats.genderInferred).toBe(1)
-    expect(stats.genderAmbiguousSkipped).toBe(1)
-    expect(stats.siblingsSeen).toBe(7 + 6 + 3)
-    expect(stats.sizeFiltered).toBe(2 + 2 + 1)
+    expect(stats.payloadsScanned).toBe(4)
+    expect(stats.familiesWithSizes).toBe(3) // F1, F2, F_dup (F5 excluded)
+    expect(stats.genderFromCategory).toBe(2) // F1, F_dup
+    expect(stats.genderFromTitle).toBe(1) // F2
+    expect(stats.genderUnresolvedSkipped).toBe(0)
+    expect(stats.siblingsSeen).toBe(7 + 6 + 2)
+    expect(stats.sizeFiltered).toBe(2 + 2 + 0)
     expect(stats.alreadyTracked).toBe(1)
     expect(stats.alreadyHarvested).toBe(1)
     expect(stats.candidates).toBe(8)
 
     expect(candidates).toEqual([...candidates].sort())
     expect(candidates).toEqual([
-      'B0AISIB0012',
+      'B0DUPSIB012',
       'B0MSIB0095',
       'B0MSIB0105',
       'B0MSIB0120',
@@ -206,12 +272,49 @@ describe('mineVariationCandidates', () => {
       'B0WSIB0085',
       'B0WSIB0090',
     ])
-    // Dedupe: B0MSIB0095 appears in both P1 and P3 but only once in the output.
+    // Dedupe: B0MSIB0095 appears in both F1 and F_dup but only once in the output.
     expect(candidates.filter((asin) => asin === 'B0MSIB0095')).toHaveLength(1)
     // Excluded ASINs never appear.
     expect(candidates).not.toContain('B0MSIB0100')
     expect(candidates).not.toContain('B0MSIB0110')
     expect(candidates).not.toContain('B0MPARENT1')
+  })
+
+  it('resolves gender from categoryTree even when the title disagrees (categoryTree wins)', () => {
+    insertRaw(db, 'B0CONFLICT1', {
+      title: 'Reebok Mens Runner', // title says M
+      categoryTree: categoryTree('Clothing, Shoes & Jewelry', 'Women', 'Shoes'), // categoryTree says W
+      variations: [
+        variation('B0CFSIB0080', '8'), // interesting for W
+        variation('B0CFSIB0085', '8.5'), // interesting for W
+        variation('B0CFSIB0100', '10'), // interesting for M only — must be filtered since W won
+      ],
+    })
+
+    const { candidates, stats } = mineVariationCandidates(db)
+
+    expect(stats.genderFromCategory).toBe(1)
+    expect(stats.genderFromTitle).toBe(0)
+    expect(stats.sizeFiltered).toBe(1) // the size-10 sibling, filtered against the W set
+    expect(candidates.sort()).toEqual(['B0CFSIB0080', 'B0CFSIB0085'])
+    expect(candidates).not.toContain('B0CFSIB0100')
+  })
+
+  it('skips a family with neither categoryTree nor title gender signal', () => {
+    insertRaw(db, 'B0NEITHER01', {
+      title: 'Classic Runner',
+      categoryTree: categoryTree('Clothing, Shoes & Jewelry', 'Shoes'),
+      variations: [variation('B0ZSIB0011', '11')],
+    })
+
+    const { candidates, stats } = mineVariationCandidates(db)
+
+    expect(stats.familiesWithSizes).toBe(1)
+    expect(stats.genderFromCategory).toBe(0)
+    expect(stats.genderFromTitle).toBe(0)
+    expect(stats.genderUnresolvedSkipped).toBe(1)
+    expect(stats.siblingsSeen).toBe(0)
+    expect(candidates).toEqual([])
   })
 
   it('exports the interesting-size constants used for filtering', () => {

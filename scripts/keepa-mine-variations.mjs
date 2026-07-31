@@ -10,7 +10,7 @@
 //   node scripts/keepa-mine-variations.mjs --dry-run [--db <path>]
 //
 // Imports the COMPILED dist/ output — run `npm run build:backend` first.
-// Progress + gender-inference accuracy → stderr; JSON stats → stdout.
+// Progress + categoryTree/title agreement → stderr; JSON stats → stdout.
 
 import { writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -72,10 +72,11 @@ async function main() {
   const db = schemaModule.openDatabase(dbPath)
 
   try {
-    const validation = variationsModule.validateGenderInference(db)
+    const validation = variationsModule.validateGenderSignals(db)
     console.error(
-      `keepa-mine-variations: gender-inference accuracy=${(validation.accuracy * 100).toFixed(1)}% ` +
-      `(${validation.correct}/${validation.applicable} applicable of ${validation.totalKnown} known-gender families)`,
+      `keepa-mine-variations: categoryTree/title agreement=${(validation.agreementRate * 100).toFixed(1)}% ` +
+      `(${validation.agreement}/${validation.familiesWithBoth} families with both signals; ` +
+      `categoryOnly=${validation.categoryOnly} titleOnly=${validation.titleOnly} neither=${validation.neither})`,
     )
 
     const { candidates, stats } = variationsModule.mineVariationCandidates(db, {
@@ -92,7 +93,7 @@ async function main() {
       console.error(`keepa-mine-variations: wrote ${candidates.length} candidate(s) to ${args.out}`)
     }
 
-    console.log(JSON.stringify({ stats, genderInferenceAccuracy: validation }, null, 2))
+    console.log(JSON.stringify({ stats, genderSignalValidation: validation }, null, 2))
   } catch (err) {
     console.error(
       'keepa-mine-variations: aborted:',
