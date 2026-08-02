@@ -180,8 +180,12 @@ export function openDatabase(databasePath = DEFAULT_DATABASE_PATH): DatabaseHand
       UNIQUE(asin, metric, ts)
     );
 
-    CREATE INDEX IF NOT EXISTS keepa_points_asin_metric_ts_idx
-      ON keepa_points (asin, metric, ts);
+    -- NO explicit (asin, metric, ts) index here: UNIQUE(asin, metric, ts)
+    -- above already creates sqlite_autoindex_keepa_points_1 on exactly those
+    -- columns. A duplicate index bought zero query benefit and cost 2.94 GB
+    -- (31% of the DB) by 2026-08-02, growing in lockstep with the harvest —
+    -- a contributing factor to the 2026-07-28 disk-exhaustion incident
+    -- (OPERATIONS.md §5.1). Dropped in production 2026-08-02. Do not re-add.
 
     CREATE TABLE IF NOT EXISTS keepa_stats (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
