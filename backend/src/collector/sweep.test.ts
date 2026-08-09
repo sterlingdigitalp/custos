@@ -27,7 +27,7 @@ describe('runSweep', () => {
     }
     const summary = await runSweep(db, client, new Date('2026-02-01T12:00:00.000Z'))
     expect(summary).toEqual({
-      ts: '2026-02-01T12:00:00.000Z', asins: 1,
+      ts: '2026-02-01T12:00:00.000Z', asins: 1, asinsSwept: 1,
       offersFetched: 1, catalogFetched: 1, bothMissed: 0,
     })
     expect(latestSnapshotForAsin(db, 'A1')).toMatchObject({

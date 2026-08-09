@@ -1,7 +1,7 @@
 import { deliverPending, type Fetch } from '../alerts/deliver.js'
 import { evaluateAlerts } from '../alerts/evaluate.js'
 import { runSweep, type SweepSummary } from '../collector/sweep.js'
-import { getSettings } from '../db/repo.js'
+import { getSettings, selectSweepAsins, updateSettings } from '../db/repo.js'
 import type { DatabaseHandle } from '../db/schema.js'
 import type { HubConfig } from '../platform/config.js'
 import type { HubDeliveryWorker } from '../platform/delivery.js'
@@ -15,6 +15,8 @@ export interface SchedulerSweepSummary extends SweepSummary {
   fetched: number
   failed: number
   alertsFired: number
+  hotCount: number
+  coldSliceCount: number
 }
 
 export interface SchedulerStatus {
@@ -68,7 +70,12 @@ export function startScheduler(
     try {
       const now = (options.now ?? (() => new Date()))()
       const client = await clientFactory()
-      const sweep = await runSweep(db, client, now)
+      const settings = getSettings(db)
+      const selection = selectSweepAsins(db, {
+        divisor: settings.coldSweepDivisor,
+        cursor: settings.coldSweepCursor,
+      })
+      const sweep = await runSweep(db, client, now, selection.asins)
       const alertsFired = evaluateAlerts(db, now)
       await deliverPending(db, getSettings(db), options.fetchImpl)
 
@@ -80,11 +87,17 @@ export function startScheduler(
         await deliveryWorker.tick()
       }
 
+      // Only advance the cold-tier rotation once the full cycle succeeds, so a
+      // failed slice is retried next time rather than skipped (no starvation).
+      updateSettings(db, { coldSweepCursor: selection.nextCursor })
+
       lastSummary = {
         ...sweep,
         fetched: sweep.asins - sweep.bothMissed,
         failed: sweep.bothMissed,
         alertsFired,
+        hotCount: selection.hotCount,
+        coldSliceCount: selection.coldSliceCount,
       }
       lastError = null
     } catch (error) {

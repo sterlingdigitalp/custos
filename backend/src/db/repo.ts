@@ -1,6 +1,7 @@
 import type { DatabaseHandle } from './schema.js'
 
 export type ProductSource = 'manual' | 'import' | 'seed' | 'extension' | 'aurora' | 'selleramp'
+export type ProductTier = 'hot' | 'cold'
 export type AlertRuleType =
   | 'price_below'
   | 'drop_percent'
@@ -21,6 +22,7 @@ export interface Product {
   addedAt: string
   source: ProductSource
   isArchived: boolean
+  tier: ProductTier
 }
 
 export interface CreateProductInput {
@@ -124,6 +126,8 @@ export interface Settings {
   sweepIntervalMin: number
   ntfyTopic: string | null
   ntfyServer: string
+  coldSweepCursor: number
+  coldSweepDivisor: number
 }
 
 export type UpdateSettingsInput = Partial<Omit<Settings, 'id'>>
@@ -242,6 +246,88 @@ export function updateProductCatalog(
   })
   db.prepare(`UPDATE products SET ${assignments.join(', ')} WHERE asin = @asin`).run(values)
   return getProductByAsin(db, asin)
+}
+
+/** Chunk size kept comfortably under SQLite's default 999 bound-parameter limit. */
+const SQL_VARIABLE_CHUNK_SIZE = 500
+
+function chunk<T>(values: T[], size: number): T[][] {
+  const result: T[][] = []
+  for (let index = 0; index < values.length; index += size) {
+    result.push(values.slice(index, index + size))
+  }
+  return result
+}
+
+/** Bulk, transactional tier assignment (tier-aware sweep scheduling). */
+export function setProductTier(
+  db: DatabaseHandle,
+  asins: string[],
+  tier: ProductTier,
+): void {
+  if (asins.length === 0) return
+  db.transaction(() => {
+    for (const batch of chunk(asins, SQL_VARIABLE_CHUNK_SIZE)) {
+      const placeholders = batch.map(() => '?').join(', ')
+      db.prepare(`UPDATE products SET tier = ? WHERE asin IN (${placeholders})`)
+        .run(tier, ...batch)
+    }
+  })()
+}
+
+/** Tier counts among active (non-archived) products. */
+export function countByTier(db: DatabaseHandle): { hot: number; cold: number } {
+  const rows = db.prepare(`
+    SELECT tier, COUNT(*) AS count FROM products WHERE isArchived = 0 GROUP BY tier
+  `).all() as Array<{ tier: ProductTier; count: number }>
+  const counts = { hot: 0, cold: 0 }
+  for (const row of rows) counts[row.tier] = row.count
+  return counts
+}
+
+export interface SweepAsinSelection {
+  asins: string[]
+  hotCount: number
+  coldCount: number
+  coldSliceCount: number
+  nextCursor: number
+}
+
+export interface SelectSweepAsinsOptions {
+  /** Number of cycles a full cold-tier pass is rotated across. <=1 sweeps all cold ASINs every cycle. */
+  divisor?: number
+  /** Which rotation slice (mod divisor) this cycle should cover. */
+  cursor?: number
+}
+
+/**
+ * All active hot ASINs, plus the cold-tier slice `index % divisor === cursor % divisor`
+ * (stable ORDER BY asin ordering). Exhaustive across `divisor` consecutive cursors —
+ * no cold ASIN is skipped or swept twice within one full rotation.
+ */
+export function selectSweepAsins(
+  db: DatabaseHandle,
+  options: SelectSweepAsinsOptions = {},
+): SweepAsinSelection {
+  const divisor = Math.max(1, Math.trunc(options.divisor ?? 1))
+  const cursor = ((Math.trunc(options.cursor ?? 0) % divisor) + divisor) % divisor
+
+  const hotAsins = (db.prepare(`
+    SELECT asin FROM products WHERE isArchived = 0 AND tier = 'hot' ORDER BY asin
+  `).all() as Array<{ asin: string }>).map((row) => row.asin)
+  const coldAsins = (db.prepare(`
+    SELECT asin FROM products WHERE isArchived = 0 AND tier = 'cold' ORDER BY asin
+  `).all() as Array<{ asin: string }>).map((row) => row.asin)
+
+  const coldSlice = coldAsins.filter((_, index) => index % divisor === cursor)
+
+  return {
+    asins: [...hotAsins, ...coldSlice],
+    hotCount: hotAsins.length,
+    coldCount: coldAsins.length,
+    coldSliceCount: coldSlice.length,
+    nextCursor: (cursor + 1) % divisor,
+  }
 }
 
 export function bulkCreateProducts(

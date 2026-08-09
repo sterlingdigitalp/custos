@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import {
   archiveProduct,
   bulkCreateProducts,
+  countByTier,
   createAlert,
   createProduct,
   createSeedQuery,
@@ -24,7 +25,9 @@ import {
   listUnreadAlertEvents,
   markAlertEventRead,
   maxPriceInWindow,
+  selectSweepAsins,
   seriesForAsin,
+  setProductTier,
   updateAlert,
   updateSeedQuery,
   updateSettings,
@@ -52,6 +55,8 @@ describe('SQLite schema and repositories', () => {
       sweepIntervalMin: 60,
       ntfyTopic: null,
       ntfyServer: 'https://ntfy.sh',
+      coldSweepCursor: 0,
+      coldSweepDivisor: 1,
     })
     const indexes = db.prepare(`
       SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'snapshots'
@@ -174,5 +179,106 @@ describe('SQLite schema and repositories', () => {
     expect(updateSettings(db, { sweepIntervalMin: 15, ntfyTopic: 'custos' }))
       .toMatchObject({ sweepIntervalMin: 15, ntfyTopic: 'custos' })
     expect(deleteAlert(db, alert.id)).toBe(true)
+  })
+})
+
+describe('tier-aware sweep scheduling', () => {
+  let db: DatabaseHandle | undefined
+  let temporaryDirectory: string | undefined
+
+  afterEach(() => {
+    db?.close()
+    if (temporaryDirectory) rmSync(temporaryDirectory, { recursive: true, force: true })
+  })
+
+  it('round-trips setProductTier and countByTier', () => {
+    db = openDatabase(':memory:')
+    createProduct(db, { asin: 'A1' })
+    createProduct(db, { asin: 'A2' })
+    createProduct(db, { asin: 'A3', isArchived: true })
+    expect(countByTier(db)).toEqual({ hot: 0, cold: 2 })
+
+    setProductTier(db, ['A1', 'A3'], 'hot')
+    expect(getProductByAsin(db, 'A1')?.tier).toBe('hot')
+    expect(getProductByAsin(db, 'A2')?.tier).toBe('cold')
+    expect(getProductByAsin(db, 'A3')?.tier).toBe('hot')
+    // A3 is archived, so it drops out of the active-only tier counts.
+    expect(countByTier(db)).toEqual({ hot: 1, cold: 1 })
+  })
+
+  it('rotates cold ASINs across a full divisor cycle with no starvation, while hot ASINs sweep every cycle', () => {
+    db = openDatabase(':memory:')
+    const hotAsins = ['H1', 'H2']
+    const coldAsins = ['C1', 'C2', 'C3', 'C4', 'C5', 'C6', 'C7']
+    for (const asin of [...hotAsins, ...coldAsins]) createProduct(db, { asin })
+    setProductTier(db, hotAsins, 'hot')
+
+    let cursor = 0
+    const coldSweptAcrossCycles: string[] = []
+    for (let cycle = 0; cycle < 4; cycle += 1) {
+      const selection = selectSweepAsins(db, { divisor: 4, cursor })
+      for (const hot of hotAsins) expect(selection.asins).toContain(hot)
+      coldSweptAcrossCycles.push(...selection.asins.filter((asin) => coldAsins.includes(asin)))
+      cursor = selection.nextCursor
+    }
+
+    // No-starvation gate: the union of cold ASINs swept across one full
+    // rotation equals the entire cold set, with no ASIN swept twice.
+    expect(coldSweptAcrossCycles.sort()).toEqual([...coldAsins].sort())
+    expect(new Set(coldSweptAcrossCycles).size).toBe(coldAsins.length)
+    expect(cursor).toBe(0)
+  })
+
+  it('sweeps all cold ASINs every cycle when divisor <= 1 (behavior-preserving default)', () => {
+    db = openDatabase(':memory:')
+    const coldAsins = ['C1', 'C2', 'C3']
+    for (const asin of coldAsins) createProduct(db, { asin })
+    for (const divisor of [0, 1, -3]) {
+      const selection = selectSweepAsins(db, { divisor, cursor: 0 })
+      expect(selection.asins.sort()).toEqual([...coldAsins].sort())
+      expect(selection.nextCursor).toBe(0)
+    }
+  })
+
+  it('never sweeps archived products in either tier', () => {
+    db = openDatabase(':memory:')
+    const hot = createProduct(db, { asin: 'HOT1' })
+    const cold = createProduct(db, { asin: 'COLD1' })
+    setProductTier(db, ['HOT1'], 'hot')
+    archiveProduct(db, hot.id)
+    archiveProduct(db, cold.id)
+
+    const selection = selectSweepAsins(db, { divisor: 1, cursor: 0 })
+    expect(selection.asins).toEqual([])
+    expect(selection.hotCount).toBe(0)
+    expect(selection.coldCount).toBe(0)
+  })
+
+  it('handles a corpus smaller than the divisor without crashing, covering every ASIN within divisor cycles', () => {
+    db = openDatabase(':memory:')
+    createProduct(db, { asin: 'C1' })
+    createProduct(db, { asin: 'C2' })
+
+    let cursor = 0
+    const seen = new Set<string>()
+    for (let cycle = 0; cycle < 4; cycle += 1) {
+      const selection = selectSweepAsins(db, { divisor: 4, cursor })
+      for (const asin of selection.asins) seen.add(asin)
+      cursor = selection.nextCursor
+    }
+    expect(seen).toEqual(new Set(['C1', 'C2']))
+  })
+
+  it('adds the tier and cold-sweep settings columns idempotently across repeated opens', () => {
+    temporaryDirectory = mkdtempSync(join(tmpdir(), 'custos-tier-'))
+    const databasePath = join(temporaryDirectory, 'custos.db')
+    const first = openDatabase(databasePath)
+    createProduct(first, { asin: 'A1' })
+    first.close()
+
+    // Reopening an existing database must be a no-op for the ALTER migrations.
+    db = openDatabase(databasePath)
+    expect(getProductByAsin(db, 'A1')?.tier).toBe('cold')
+    expect(getSettings(db)).toMatchObject({ coldSweepCursor: 0, coldSweepDivisor: 1 }) // tiering is opt-in
   })
 })

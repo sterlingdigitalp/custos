@@ -28,7 +28,8 @@ export function openDatabase(databasePath = DEFAULT_DATABASE_PATH): DatabaseHand
       source TEXT NOT NULL CHECK (
         source IN ('manual', 'import', 'seed', 'extension', 'aurora', 'selleramp')
       ),
-      isArchived INTEGER NOT NULL DEFAULT 0 CHECK (isArchived IN (0, 1))
+      isArchived INTEGER NOT NULL DEFAULT 0 CHECK (isArchived IN (0, 1)),
+      tier TEXT NOT NULL DEFAULT 'cold' CHECK (tier IN ('hot', 'cold'))
     );
 
     CREATE TABLE IF NOT EXISTS snapshots (
@@ -89,7 +90,14 @@ export function openDatabase(databasePath = DEFAULT_DATABASE_PATH): DatabaseHand
       region TEXT NOT NULL DEFAULT 'na',
       sweepIntervalMin INTEGER NOT NULL DEFAULT 60,
       ntfyTopic TEXT,
-      ntfyServer TEXT NOT NULL DEFAULT 'https://ntfy.sh'
+      ntfyServer TEXT NOT NULL DEFAULT 'https://ntfy.sh',
+      coldSweepCursor INTEGER NOT NULL DEFAULT 0,
+      -- Tiering is OPT-IN: divisor 1 = every active ASIN swept every cycle
+      -- (identical to pre-tiering behavior). Raise it (e.g. to 4) ONLY after
+      -- marking a hot tier via scripts/custos-assign-tiers.mjs, otherwise
+      -- everything defaults to tier='cold' and a divisor > 1 would silently
+      -- cut sweep coverage by that factor.
+      coldSweepDivisor INTEGER NOT NULL DEFAULT 1
     );
 
     CREATE TABLE IF NOT EXISTS registry_product_map (
@@ -256,6 +264,27 @@ export function openDatabase(databasePath = DEFAULT_DATABASE_PATH): DatabaseHand
       ALTER TABLE alert_events ADD COLUMN isRead INTEGER NOT NULL DEFAULT 0
       CHECK (isRead IN (0, 1))
     `)
+  }
+
+  // Tier-aware sweep scheduling (hot ASINs every cycle, cold ASINs rotated
+  // across N cycles). Guarded for databases created before this column existed.
+  const productColumns = db.pragma('table_info(products)') as Array<{ name: string }>
+  if (!productColumns.some((column) => column.name === 'tier')) {
+    db.exec(`
+      ALTER TABLE products ADD COLUMN tier TEXT NOT NULL DEFAULT 'cold'
+      CHECK (tier IN ('hot', 'cold'))
+    `)
+  }
+
+  const settingsColumns = db.pragma('table_info(settings)') as Array<{ name: string }>
+  if (!settingsColumns.some((column) => column.name === 'coldSweepCursor')) {
+    db.exec('ALTER TABLE settings ADD COLUMN coldSweepCursor INTEGER NOT NULL DEFAULT 0')
+  }
+  if (!settingsColumns.some((column) => column.name === 'coldSweepDivisor')) {
+    // DEFAULT 1 = tiering off. This migration runs against the LIVE db where
+    // every existing product is tier='cold'; a default > 1 would instantly cut
+    // sweep coverage by that factor on deploy. Enable deliberately instead.
+    db.exec('ALTER TABLE settings ADD COLUMN coldSweepDivisor INTEGER NOT NULL DEFAULT 1')
   }
 
   db.exec(`

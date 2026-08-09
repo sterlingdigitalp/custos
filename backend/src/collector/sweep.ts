@@ -9,6 +9,7 @@ import type { CustosApiClient } from '../spapi/client.js'
 export interface SweepSummary {
   ts: string
   asins: number
+  asinsSwept: number
   offersFetched: number
   catalogFetched: number
   bothMissed: number
@@ -18,13 +19,18 @@ function asDate(now: Date | string): Date {
   return typeof now === 'string' ? new Date(now) : now
 }
 
+/**
+ * `asins` optionally scopes the sweep to a specific list (tier-aware
+ * scheduling passes hot + a rotating cold slice). Defaults to every active
+ * product, preserving prior full-corpus behavior for existing callers.
+ */
 export async function runSweep(
   db: DatabaseHandle,
   client: CustosApiClient,
   now: Date | string,
+  asinsOverride?: string[],
 ): Promise<SweepSummary> {
-  const products = listNonArchivedProducts(db)
-  const asins = products.map((product) => product.asin)
+  const asins = asinsOverride ?? listNonArchivedProducts(db).map((product) => product.asin)
   const ts = asDate(now).toISOString()
 
   const [offerResults, catalogResults] = await Promise.all([
@@ -43,14 +49,14 @@ export async function runSweep(
 
   let bothMissed = 0
   db.transaction(() => {
-    for (const product of products) {
-      const offers = offersByAsin.get(product.asin)
-      const catalog = catalogByAsin.get(product.asin)
+    for (const asin of asins) {
+      const offers = offersByAsin.get(asin)
+      const catalog = catalogByAsin.get(asin)
       if (!offers && !catalog) {
         bothMissed += 1
       }
       insertSnapshot(db, {
-        asin: product.asin,
+        asin,
         ts,
         buyBoxPrice: offers?.buyBoxPrice ?? null,
         lowestNewPrice: offers?.lowestNewPrice ?? null,
@@ -61,7 +67,7 @@ export async function runSweep(
         rankCategory: catalog?.rankCategory ?? null,
       })
       if (catalog) {
-        updateProductCatalog(db, product.asin, {
+        updateProductCatalog(db, asin, {
           title: catalog.title,
           brand: catalog.brand,
           imageUrl: catalog.imageUrl,
@@ -75,6 +81,7 @@ export async function runSweep(
   return {
     ts,
     asins: asins.length,
+    asinsSwept: asins.length,
     offersFetched: offersByAsin.size,
     catalogFetched: catalogByAsin.size,
     bothMissed,
