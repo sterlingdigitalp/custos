@@ -16,6 +16,8 @@ import { normalizeKeepaProduct } from './normalize.js'
 
 export interface RenormalizeOptions {
   log?: (message: string) => void
+  /** Restrict the rebuild to these ASINs. Omit to rebuild every keepa_raw row. */
+  asins?: string[]
 }
 
 export interface RenormalizeSummary {
@@ -47,18 +49,31 @@ export function renormalizeAll(
 ): RenormalizeSummary {
   const log = options.log ?? (() => {})
 
-  const rows = db.prepare(`
-    SELECT asin, payload FROM keepa_raw ORDER BY asin
-  `).all() as KeepaRawRow[]
+  // Load the ASIN list only (a few thousand short strings), then fetch each
+  // payload one at a time inside the loop. Do NOT stream the payloads with
+  // .iterate(): this loop writes to keepa_points, and better-sqlite3 rejects
+  // writes while an iterator is open ("database connection is busy"). Fetching
+  // per-ASIN keeps heap flat without holding a read cursor open.
+  const asinRows = db.prepare(
+    'SELECT asin FROM keepa_raw ORDER BY asin',
+  ).all() as Array<{ asin: string }>
+  const payloadStmt = db.prepare('SELECT payload FROM keepa_raw WHERE asin = ?')
+
+  // Optional subset. Points are derived data and are periodically deleted for
+  // untracked ASINs to reclaim disk (OPERATIONS.md §5.1), so rebuilding just
+  // the ASINs being promoted into the tracked corpus must not resurrect the
+  // rest — that would undo the reclaim.
+  const target = options.asins
+    ? new Set(options.asins.map((a) => a.trim().toUpperCase()).filter(Boolean))
+    : null
 
   const summary: RenormalizeSummary = { asins: 0, pointsBefore: 0, pointsAfter: 0 }
 
-  if (rows.length === 0) {
-    log('keepa-renormalize: no keepa_raw rows found')
-    return summary
-  }
-
-  log(`keepa-renormalize: ${rows.length} ASIN(s) to re-normalize`)
+  log(
+    target
+      ? `keepa-renormalize: targeting ${target.size} ASIN(s)`
+      : 'keepa-renormalize: re-normalizing every keepa_raw ASIN',
+  )
 
   const insertPoint = db.prepare(`
     INSERT OR IGNORE INTO keepa_points (asin, metric, ts, value)
@@ -66,8 +81,11 @@ export function renormalizeAll(
   `)
   const deletePoints = db.prepare('DELETE FROM keepa_points WHERE asin = ?')
 
-  for (const row of rows) {
-    const asin = row.asin
+  for (const { asin } of asinRows) {
+    if (target && !target.has(asin)) continue
+
+    const row = payloadStmt.get(asin) as { payload: Buffer } | undefined
+    if (!row) continue
 
     let product: Record<string, unknown>
     try {

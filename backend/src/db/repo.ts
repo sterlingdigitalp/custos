@@ -9,7 +9,17 @@ export type AlertRuleType =
   | 'rank_below'
   | 'buybox_change'
 
-export const MAX_TRACKED_PRODUCTS = 5_000
+/**
+ * Corpus safety rail. Raised 5,000 -> 20,000 on 2026-08-15 for the shoe-variation
+ * expansion (corpus ~11,700). The original 5,000 encoded a sweep-capacity limit:
+ * SP-API paces at 2 ASINs/sec, so a FLAT hourly sweep only fits ~7,000. That
+ * ceiling no longer binds — tier-aware scheduling sweeps all hot ASINs plus a
+ * rotating 1/N slice of cold ones each cycle (see selectSweepAsins). Capacity is
+ * now governed by the tier divisor, not this constant; this is just a rail
+ * against runaway growth (disk is the real cost — ~0.47 MB of Keepa history per
+ * tracked ASIN).
+ */
+export const MAX_TRACKED_PRODUCTS = 20_000
 
 export interface Product {
   id: number

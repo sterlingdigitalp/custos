@@ -4,6 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import {
+  MAX_TRACKED_PRODUCTS,
   archiveProduct,
   bulkCreateProducts,
   countByTier,
@@ -115,18 +116,21 @@ describe('SQLite schema and repositories', () => {
     expect(listProducts(db, false)).toHaveLength(3)
   })
 
-  it('rejects corpus additions beyond the 5,000-product cap', () => {
+  it('rejects corpus additions beyond the MAX_TRACKED_PRODUCTS cap', () => {
     const database = openDatabase(':memory:')
     db = database
-    database.exec(`
+    // Seed exactly to the cap, whatever it currently is (raised 5,000 -> 20,000
+    // for the shoe-variation expansion), so this test tracks the constant
+    // instead of pinning a number that changes with corpus policy.
+    database.prepare(`
       WITH RECURSIVE ids(value) AS (
-        SELECT 1 UNION ALL SELECT value + 1 FROM ids WHERE value < 5000
+        SELECT 1 UNION ALL SELECT value + 1 FROM ids WHERE value < ?
       )
       INSERT INTO products (asin, addedAt, source)
       SELECT printf('A%09d', value), '2026-01-01T00:00:00.000Z', 'import' FROM ids
-    `)
+    `).run(MAX_TRACKED_PRODUCTS)
     expect(() => createProduct(database, { asin: 'ONE_TOO_MANY' }))
-      .toThrow('Custos corpus is capped at 5,000 products')
+      .toThrow(/corpus is capped/)
   })
 
   it('round-trips snapshots and applies time-window queries with price fallback', () => {

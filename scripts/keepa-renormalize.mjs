@@ -21,13 +21,18 @@ const __dirname = dirname(fileURLToPath(import.meta.url))
 const repoRoot = join(__dirname, '..')
 
 function parseArgs(argv) {
-  const args = { db: undefined }
+  const args = { db: undefined, asinsFile: undefined }
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]
     if (arg === '--db') args.db = argv[++i]
+    else if (arg === '--asins-file') args.asinsFile = argv[++i]
     else if (arg === '--help' || arg === '-h') {
       console.error(`Usage: node scripts/keepa-renormalize.mjs [options]
-  --db <path>   SQLite path (default data/custos.db)`)
+  --db <path>           SQLite path (default data/custos.db)
+  --asins-file <path>   Newline-delimited ASINs; rebuild ONLY these.
+                        Omit to rebuild every keepa_raw ASIN — note that
+                        points for untracked ASINs are deliberately pruned
+                        to reclaim disk, so a full run resurrects them.`)
       process.exit(0)
     }
   }
@@ -64,8 +69,16 @@ async function main() {
   const db = schemaModule.openDatabase(dbPath)
 
   try {
+    let asins
+    if (args.asinsFile) {
+      const { readFileSync } = await import('node:fs')
+      asins = readFileSync(args.asinsFile, 'utf8')
+        .split('\n').map((a) => a.trim()).filter(Boolean)
+      console.error(`keepa-renormalize: loaded ${asins.length} target ASIN(s) from ${args.asinsFile}`)
+    }
     const summary = renormalizeModule.renormalizeAll(db, {
       log: (msg) => console.error(msg),
+      ...(asins ? { asins } : {}),
     })
     console.log(JSON.stringify(summary, null, 2))
   } catch (err) {
