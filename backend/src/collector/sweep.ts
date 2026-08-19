@@ -13,6 +13,9 @@ export interface SweepSummary {
   offersFetched: number
   catalogFetched: number
   bothMissed: number
+  /** Pricing + catalog chunk failures (transient 5xx/auth/JSON errors) from
+   * this sweep's client calls, so a failure never hides as a silent zero. */
+  chunkFailures: number
 }
 
 function asDate(now: Date | string): Date {
@@ -37,6 +40,8 @@ export async function runSweep(
     client.getOffers(asins),
     client.getCatalog(asins),
   ])
+  const failures = client.getLastChunkFailures?.()
+  const chunkFailures = (failures?.pricing ?? 0) + (failures?.catalog ?? 0)
   const tracked = new Set(asins)
   const offersByAsin = new Map(
     offerResults.filter((result) => tracked.has(result.asin)).map((result) => [result.asin, result]),
@@ -85,5 +90,6 @@ export async function runSweep(
     offersFetched: offersByAsin.size,
     catalogFetched: catalogByAsin.size,
     bothMissed,
+    chunkFailures,
   }
 }

@@ -28,7 +28,7 @@ describe('runSweep', () => {
     const summary = await runSweep(db, client, new Date('2026-02-01T12:00:00.000Z'))
     expect(summary).toEqual({
       ts: '2026-02-01T12:00:00.000Z', asins: 1, asinsSwept: 1,
-      offersFetched: 1, catalogFetched: 1, bothMissed: 0,
+      offersFetched: 1, catalogFetched: 1, bothMissed: 0, chunkFailures: 0,
     })
     expect(latestSnapshotForAsin(db, 'A1')).toMatchObject({
       buyBoxPrice: 19.99, offerCount: 6, salesRank: 1234, rankCategory: 'Power Tools',
@@ -71,6 +71,20 @@ describe('runSweep', () => {
       buyBoxPrice: null, lowestNewPrice: null, lowestFbaPrice: null,
       offerCount: null, fbaOfferCount: null, salesRank: null, rankCategory: null,
     })
+  })
+
+  it('surfaces chunk failures reported by the client on the summary', async () => {
+    db = openDatabase(':memory:')
+    createProduct(db, { asin: 'A1' })
+    const client: CustosApiClient = {
+      getOffers: async () => [],
+      getCatalog: async () => [],
+      searchByKeywords: async () => ({ items: [], nextPageToken: null }),
+      ping: async () => ({ ok: true, detail: 'test' }),
+      getLastChunkFailures: () => ({ pricing: 2, catalog: 1 }),
+    }
+    const summary = await runSweep(db, client, new Date('2026-02-01T12:00:00.000Z'))
+    expect(summary.chunkFailures).toBe(3)
   })
 
   it('does not poll archived products', async () => {

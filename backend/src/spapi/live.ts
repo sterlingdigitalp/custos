@@ -9,6 +9,9 @@ const REGION_ENDPOINTS: Record<string, string> = {
 const MAX_BATCH_SIZE = 20
 const DEFAULT_PRICING_INTERVAL_MS = 10_000
 const DEFAULT_CATALOG_INTERVAL_MS = 600
+// An unbounded Retry-After (Amazon has sent values like 86400s) must never
+// park a sweep cycle for anywhere near that long.
+const MAX_RETRY_DELAY_MS = 60_000
 
 export interface LiveCustosClientSettings {
   lwaClientId: string
@@ -50,11 +53,25 @@ function endpointForRegion(region: string): string {
 }
 
 function retryDelayMilliseconds(value: string | null, now = Date.now()): number {
-  if (value === null) return 10_000
-  const seconds = Number(value)
-  if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000
-  const date = Date.parse(value)
-  return Number.isFinite(date) ? Math.max(0, date - now) : 10_000
+  const ms = ((): number => {
+    if (value === null) return 10_000
+    const seconds = Number(value)
+    if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1_000
+    const date = Date.parse(value)
+    return Number.isFinite(date) ? Math.max(0, date - now) : 10_000
+  })()
+  return Math.min(ms, MAX_RETRY_DELAY_MS)
+}
+
+function isRetryableStatus(status: number): boolean {
+  return status === 429 || (status >= 500 && status < 600)
+}
+
+/** Never logs credentials — only the HTTP status and the (Amazon-supplied
+ * or generic) error message, which never echoes back request secrets. */
+function logChunkFailure(kind: 'pricing' | 'catalog', error: unknown): void {
+  const message = error instanceof Error ? error.message : String(error)
+  console.error(`[spapi] ${kind} chunk failed: ${message}`)
 }
 
 function amazonError(value: unknown): string | undefined {
@@ -196,6 +213,8 @@ function mapCatalogItem(value: unknown): CatalogInfo | undefined {
 export class LiveCustosClient implements CustosApiClient {
   private readonly endpoint: string
   private readonly tokenManager: LwaTokenManager
+  private pricingChunkFailures = 0
+  private catalogChunkFailures = 0
 
   constructor(
     private readonly settings: LiveCustosClientSettings,
@@ -213,7 +232,13 @@ export class LiveCustosClient implements CustosApiClient {
     }, fetchImpl, now)
   }
 
+  /** Chunk failures from the most recent getOffers/getCatalog call. */
+  getLastChunkFailures(): { pricing: number; catalog: number } {
+    return { pricing: this.pricingChunkFailures, catalog: this.catalogChunkFailures }
+  }
+
   async getOffers(asins: string[]): Promise<OfferSnapshot[]> {
+    this.pricingChunkFailures = 0
     const snapshots = new Map<string, OfferSnapshot>()
     const batches = chunks(asins, MAX_BATCH_SIZE)
     for (let index = 0; index < batches.length; index += 1) {
@@ -242,8 +267,12 @@ export class LiveCustosClient implements CustosApiClient {
           const asin = text(payload.ASIN) ?? requestAsin(item) ?? batch[itemIndex]
           if (asin) snapshots.set(asin, mapOffers(asin, payload))
         })
-      } catch {
-        // Failed chunks remain absent; later chunks still run.
+      } catch (error) {
+        // Failed chunks remain absent; later chunks still run. Counted and
+        // logged (without credentials) so a transient failure is never
+        // silently indistinguishable from "Amazon has no data".
+        this.pricingChunkFailures += 1
+        logChunkFailure('pricing', error)
       }
       if (index < batches.length - 1) await this.sleep(this.pricingIntervalMs)
     }
@@ -251,6 +280,7 @@ export class LiveCustosClient implements CustosApiClient {
   }
 
   async getCatalog(asins: string[]): Promise<CatalogInfo[]> {
+    this.catalogChunkFailures = 0
     const items = new Map<string, CatalogInfo>()
     const batches = chunks(asins, MAX_BATCH_SIZE)
     for (let index = 0; index < batches.length; index += 1) {
@@ -268,8 +298,12 @@ export class LiveCustosClient implements CustosApiClient {
           const item = mapCatalogItem(value)
           if (item) items.set(item.asin, item)
         }
-      } catch {
-        // Failed chunks remain absent; later chunks still run.
+      } catch (error) {
+        // Failed chunks remain absent; later chunks still run. Counted and
+        // logged (without credentials) so a transient failure is never
+        // silently indistinguishable from "Amazon has no data".
+        this.catalogChunkFailures += 1
+        logChunkFailure('catalog', error)
       }
       if (index < batches.length - 1) await this.sleep(this.catalogIntervalMs)
     }
@@ -313,7 +347,11 @@ export class LiveCustosClient implements CustosApiClient {
       },
     }
     let response = await this.fetchImpl(`${this.endpoint}${path}`, requestInit)
-    if (response.status === 429) {
+    // A single retry for 429 (rate limit) or 5xx (transient server error) —
+    // a 5xx is otherwise indistinguishable from "Amazon has no data" once
+    // the chunk is swallowed. Retry-After is capped at 60s regardless of
+    // what Amazon sends.
+    if (isRetryableStatus(response.status)) {
       await this.sleep(retryDelayMilliseconds(response.headers.get('retry-after')))
       response = await this.fetchImpl(`${this.endpoint}${path}`, requestInit)
     }

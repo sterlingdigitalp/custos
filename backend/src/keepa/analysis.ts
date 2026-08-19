@@ -4,6 +4,7 @@
 // All money values are integer cents. All times are epoch milliseconds
 // internally; ISO-8601 UTC strings at the boundary.
 
+import { OBSERVATION_SQL } from '../db/repo.js'
 import type { DatabaseHandle } from '../db/schema.js'
 import { dollarsToCents } from '../platform/money.js'
 
@@ -136,8 +137,14 @@ function loadSweepRows(
   db: DatabaseHandle,
   asin: string,
 ): Array<{ tsMs: number; cents: number | null }> {
+  // A miss row (every metric null — a total SP-API failure, DESIGN.md:77-79)
+  // must not count as sweep coverage: it would both block the Keepa
+  // fallback during a real outage and manufacture a bogus "fresh null"
+  // current value. Real observations with a null buyBoxPrice specifically
+  // (e.g. product genuinely has no offers this sweep) still pass through.
   const rows = db.prepare(`
-    SELECT ts, buyBoxPrice FROM snapshots WHERE asin = ? ORDER BY ts ASC, id ASC
+    SELECT ts, buyBoxPrice FROM snapshots WHERE asin = ? AND ${OBSERVATION_SQL}
+    ORDER BY ts ASC, id ASC
   `).all(asin) as SweepRow[]
   return rows.map((r) => ({ tsMs: Date.parse(r.ts), cents: dollarsToCents(r.buyBoxPrice) }))
 }

@@ -69,13 +69,14 @@ describe('LiveCustosClient', () => {
     }] })
   })
 
-  it('paces pricing chunks and isolates a failed chunk', async () => {
+  it('paces pricing chunks and isolates a failed chunk (5xx retried once, still fails)', async () => {
     let batchCall = 0
     const delays: number[] = []
     const fetchImpl: Fetch = async (input, init) => {
       if (String(input).includes('/auth/o2/token')) return json({ access_token: 'token', expires_in: 3600 })
       batchCall += 1
-      if (batchCall === 1) return json({ message: 'failed chunk' }, 500)
+      // Chunk 1 fails on both its initial attempt and its one retry.
+      if (batchCall <= 2) return json({ message: 'failed chunk' }, 500)
       const body = JSON.parse(String(init?.body)) as { requests: Array<{ uri: string }> }
       return json({ responses: body.requests.map(({ uri }) => ({
         status: { statusCode: 200 }, request: { uri }, body: { payload: { Offers: [] } },
@@ -85,8 +86,51 @@ describe('LiveCustosClient', () => {
       settings(), fetchImpl, async (ms) => { delays.push(ms) }, 321, 600,
     )
     const results = await client.getOffers(Array.from({ length: 21 }, (_, index) => `A${index}`))
-    expect(delays).toEqual([321])
+    // [retry delay for chunk 1's 5xx, inter-chunk pacing delay]
+    expect(delays).toEqual([10_000, 321])
     expect(results.map(({ asin }) => asin)).toEqual(['A20'])
+    expect(client.getLastChunkFailures()).toEqual({ pricing: 1, catalog: 0 })
+  })
+
+  it('retries a single 5xx pricing chunk once and recovers on success', async () => {
+    let batchCall = 0
+    const delays: number[] = []
+    const fetchImpl: Fetch = async (input, init) => {
+      if (String(input).includes('/auth/o2/token')) return json({ access_token: 'token', expires_in: 3600 })
+      batchCall += 1
+      if (batchCall === 1) return json({ message: 'transient' }, 503)
+      const body = JSON.parse(String(init?.body)) as { requests: Array<{ uri: string }> }
+      return json({ responses: body.requests.map(({ uri }) => ({
+        status: { statusCode: 200 }, request: { uri }, body: { payload: { ASIN: 'B0OK', Offers: [] } },
+      })) })
+    }
+    const client = new LiveCustosClient(settings(), fetchImpl, async (ms) => { delays.push(ms) })
+    const results = await client.getOffers(['B0OK'])
+    expect(delays).toEqual([10_000])
+    expect(results.map(({ asin }) => asin)).toEqual(['B0OK'])
+    expect(client.getLastChunkFailures()).toEqual({ pricing: 0, catalog: 0 })
+  })
+
+  it('logs a chunk failure without leaking the LWA/refresh credentials', async () => {
+    const logs: string[] = []
+    const originalError = console.error
+    console.error = (...args: unknown[]) => { logs.push(args.map(String).join(' ')) }
+    try {
+      const fetchImpl: Fetch = async (input) => {
+        if (String(input).includes('/auth/o2/token')) return json({ access_token: 'token', expires_in: 3600 })
+        return json({ message: 'boom' }, 500)
+      }
+      const client = new LiveCustosClient(settings(), fetchImpl, async () => {})
+      await client.getOffers(['A1'])
+      expect(logs.length).toBeGreaterThan(0)
+      const combined = logs.join('\n')
+      expect(combined).toContain('pricing')
+      expect(combined).not.toContain('secret')
+      expect(combined).not.toContain('refresh')
+      expect(combined).not.toContain('token')
+    } finally {
+      console.error = originalError
+    }
   })
 
   it('pins catalog identifiers and prefers display-group rank', async () => {
@@ -121,14 +165,17 @@ describe('LiveCustosClient', () => {
     const fetchImpl: Fetch = async (input) => {
       if (String(input).includes('/auth/o2/token')) return json({ access_token: 'token', expires_in: 3600 })
       calls += 1
-      return calls === 1 ? json({ error: 'nope' }, 500) : json({ items: [{ asin: 'A20' }] })
+      // Chunk 1 fails on both its initial attempt and its one retry.
+      return calls <= 2 ? json({ error: 'nope' }, 500) : json({ items: [{ asin: 'A20' }] })
     }
     const client = new LiveCustosClient(
       settings(), fetchImpl, async (ms) => { delays.push(ms) }, 10_000, 87,
     )
     const result = await client.getCatalog(Array.from({ length: 21 }, (_, index) => `A${index}`))
-    expect(delays).toEqual([87])
+    // [retry delay for chunk 1's 5xx, inter-chunk pacing delay]
+    expect(delays).toEqual([10_000, 87])
     expect(result.map(({ asin }) => asin)).toEqual(['A20'])
+    expect(client.getLastChunkFailures()).toEqual({ pricing: 0, catalog: 1 })
   })
 
   it('retries one 429 using Retry-After and no more', async () => {
@@ -144,6 +191,35 @@ describe('LiveCustosClient', () => {
     await expect(client.getCatalog(['A1'])).resolves.toEqual([])
     expect(requests).toBe(2)
     expect(delays).toEqual([2000])
+  })
+
+  it('caps an unbounded Retry-After at 60s instead of parking the sweep', async () => {
+    let requests = 0
+    const delays: number[] = []
+    const fetchImpl: Fetch = async (input) => {
+      if (String(input).includes('/auth/o2/token')) return json({ access_token: 'token', expires_in: 3600 })
+      requests += 1
+      // Amazon has sent values like this (a full day) — must never be honored as-is.
+      if (requests === 1) return json({}, 429, { 'retry-after': '86400' })
+      return json({ items: [] })
+    }
+    const client = new LiveCustosClient(settings(), fetchImpl, async (ms) => { delays.push(ms) })
+    await expect(client.getCatalog(['A1'])).resolves.toEqual([])
+    expect(delays).toEqual([60_000])
+  })
+
+  it('caps the retry delay at 60s for a 5xx too', async () => {
+    let requests = 0
+    const delays: number[] = []
+    const fetchImpl: Fetch = async (input) => {
+      if (String(input).includes('/auth/o2/token')) return json({ access_token: 'token', expires_in: 3600 })
+      requests += 1
+      if (requests === 1) return json({}, 503, { 'retry-after': '3600' })
+      return json({ items: [] })
+    }
+    const client = new LiveCustosClient(settings(), fetchImpl, async (ms) => { delays.push(ms) })
+    await expect(client.getCatalog(['A1'])).resolves.toEqual([])
+    expect(delays).toEqual([60_000])
   })
 
   it('maps paged keyword search and page token', async () => {

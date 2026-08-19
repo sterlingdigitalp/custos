@@ -81,7 +81,7 @@ export function startScheduler(
 
       // P2: spike inference → daily rollups → outbox drain.
       // Spikes/rollups always record locally; emission is gated on hubConfig.
-      detectAndRecordSpikes(db, hubConfig, { now })
+      detectAndRecordSpikes(db, hubConfig, { now, asins: selection.asins })
       computeDailyRollups(db, hubConfig, { now })
       if (deliveryWorker && hubConfig) {
         await deliveryWorker.tick()

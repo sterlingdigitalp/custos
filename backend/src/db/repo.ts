@@ -67,6 +67,41 @@ export interface Snapshot {
 
 export type CreateSnapshotInput = Omit<Snapshot, 'id'>
 
+/**
+ * A snapshot row only counts as a real observation when SP-API actually
+ * returned SOMETHING for that ASIN. DESIGN.md:77-79 requires a row to be
+ * inserted even on a total sweep miss (chunk failure or empty response),
+ * but that row has every metric null — it records "we tried and got
+ * nothing", not "the product's value is null". Downstream consumers
+ * (alerting, spike detection, ceiling analysis, contrib) must treat a
+ * miss row as UNKNOWN, never as a real zero/out-of-stock/null value.
+ */
+export function isObservation(
+  row: Pick<
+    Snapshot,
+    'buyBoxPrice' | 'lowestNewPrice' | 'lowestFbaPrice' | 'offerCount' | 'fbaOfferCount' | 'salesRank'
+  >,
+): boolean {
+  return (
+    row.buyBoxPrice !== null ||
+    row.lowestNewPrice !== null ||
+    row.lowestFbaPrice !== null ||
+    row.offerCount !== null ||
+    row.fbaOfferCount !== null ||
+    row.salesRank !== null
+  )
+}
+
+/**
+ * SQL boolean expression mirroring `isObservation` above, for queries that
+ * need to skip miss rows at the database layer rather than filtering in
+ * JS. No leading AND/WHERE — splice into a WHERE clause.
+ */
+export const OBSERVATION_SQL = `(
+  buyBoxPrice IS NOT NULL OR lowestNewPrice IS NOT NULL OR lowestFbaPrice IS NOT NULL OR
+  offerCount IS NOT NULL OR fbaOfferCount IS NOT NULL OR salesRank IS NOT NULL
+)`
+
 export interface Alert {
   id: number
   asin: string
@@ -168,9 +203,11 @@ function alertEventFromRow(row: AlertEventRow): AlertEvent {
 }
 
 export function createProduct(db: DatabaseHandle, input: CreateProductInput): Product {
-  const { count } = db.prepare('SELECT COUNT(*) AS count FROM products').get() as { count: number }
+  // Archived products don't count against the cap — archiving frees capacity.
+  const { count } = db.prepare('SELECT COUNT(*) AS count FROM products WHERE isArchived = 0')
+    .get() as { count: number }
   if (count >= MAX_TRACKED_PRODUCTS) {
-    throw new Error('Custos corpus is capped at 5,000 products')
+    throw new Error(`Custos corpus is capped at ${MAX_TRACKED_PRODUCTS} products`)
   }
   const result = db.prepare(`
     INSERT INTO products (
@@ -390,10 +427,31 @@ export function seriesForAsin(
   `).all(asin, cutoff) as Snapshot[]
 }
 
+/**
+ * The two most recent REAL observations (miss rows skipped), latest first.
+ * Callers doing in-stock/out-of-stock or value-change transitions rely on
+ * this to never see a miss row on either side of the comparison.
+ */
 export function latestTwoForAsin(db: DatabaseHandle, asin: string): Snapshot[] {
   return db.prepare(`
-    SELECT * FROM snapshots WHERE asin = ? ORDER BY ts DESC, id DESC LIMIT 2
+    SELECT * FROM snapshots WHERE asin = ? AND ${OBSERVATION_SQL}
+    ORDER BY ts DESC, id DESC LIMIT 2
   `).all(asin) as Snapshot[]
+}
+
+/**
+ * Latest REAL observation for an ASIN (miss rows skipped) — distinct from
+ * `latestSnapshotForAsin`, which returns the latest row of any kind
+ * (including a miss row) for callers that need to know a sweep ran at all.
+ */
+export function latestObservationForAsin(
+  db: DatabaseHandle,
+  asin: string,
+): Snapshot | undefined {
+  return db.prepare(`
+    SELECT * FROM snapshots WHERE asin = ? AND ${OBSERVATION_SQL}
+    ORDER BY ts DESC, id DESC LIMIT 1
+  `).get(asin) as Snapshot | undefined
 }
 
 export function maxPriceInWindow(

@@ -15,6 +15,14 @@ export interface SpikeDetectionOptions {
   /** Previous rank must be strictly greater than this (default 1000). */
   minBaseRank?: number
   now?: Date
+  /**
+   * Restrict inspection to these ASINs (e.g. the cycle's tier-aware sweep
+   * selection) instead of the full corpus. Cold ASINs not swept this cycle
+   * cannot have a new snapshot pair, so scanning them every cycle is a
+   * wasted N+1 over the whole corpus. Omitted = full-corpus scan (every
+   * active product), preserving prior behavior for existing callers.
+   */
+  asins?: string[]
 }
 
 export interface SpikeDetectionResult {
@@ -44,10 +52,10 @@ export function detectAndRecordSpikes(
     skippedNoPair: 0,
   }
 
-  const products = listProducts(db, true)
-  for (const product of products) {
+  const asins = options.asins ?? listProducts(db, true).map((product) => product.asin)
+  for (const asin of asins) {
     result.checked++
-    const pair = latestTwoForAsin(db, product.asin)
+    const pair = latestTwoForAsin(db, asin)
     if (pair.length < 2) {
       result.skippedNoPair++
       continue
@@ -71,7 +79,7 @@ export function detectAndRecordSpikes(
     const detectedAt = latest.ts
     const rankCategory = latest.rankCategory ?? previous.rankCategory ?? null
 
-    const mapping = getMappingByAsin(db, product.asin)
+    const mapping = getMappingByAsin(db, asin)
     const canEmit = config !== null && mapping !== undefined
 
     db.transaction(() => {
@@ -84,7 +92,7 @@ export function detectAndRecordSpikes(
           @improvementPercent, NULL
         )
       `).run({
-        asin: product.asin,
+        asin,
         detectedAt,
         rankBefore: previous.salesRank,
         rankAfter: latest.salesRank,
@@ -120,7 +128,7 @@ export function detectAndRecordSpikes(
       db.prepare(`
         UPDATE history_spikes SET emitted_event_id = ?
         WHERE asin = ? AND detected_at = ?
-      `).run(envelope.eventId, product.asin, detectedAt)
+      `).run(envelope.eventId, asin, detectedAt)
       result.emitted++
     })()
   }

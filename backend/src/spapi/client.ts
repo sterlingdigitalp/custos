@@ -31,6 +31,12 @@ export interface CustosApiClient {
   getCatalog(asins: string[]): Promise<CatalogInfo[]>
   searchByKeywords(query: string, pageToken?: string): Promise<SeedSearchResult>
   ping(): Promise<{ ok: boolean; detail: string }>
+  /**
+   * Chunk failures from the most recent getOffers/getCatalog call. Optional
+   * because not every implementation has "chunks" that can fail (the mock
+   * client never fails a chunk); callers must fall back to zero.
+   */
+  getLastChunkFailures?(): { pricing: number; catalog: number }
 }
 
 type ClientSettings = Pick<Settings, 'lwaClientId' | 'lwaClientSecret' | 'refreshToken'> &

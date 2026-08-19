@@ -18,6 +18,9 @@ import {
   getSettings,
   insertAlertEvent,
   insertSnapshot,
+  isObservation,
+  OBSERVATION_SQL,
+  latestObservationForAsin,
   latestSnapshotForAsin,
   latestTwoForAsin,
   listActiveAlerts,
@@ -129,8 +132,25 @@ describe('SQLite schema and repositories', () => {
       INSERT INTO products (asin, addedAt, source)
       SELECT printf('A%09d', value), '2026-01-01T00:00:00.000Z', 'import' FROM ids
     `).run(MAX_TRACKED_PRODUCTS)
+    // Assert the ACTUAL number appears, not just the phrase "corpus is
+    // capped" — a loose regex previously hid a stale 5,000 in the message
+    // while the real constant had drifted to 20,000.
     expect(() => createProduct(database, { asin: 'ONE_TOO_MANY' }))
-      .toThrow(/corpus is capped/)
+      .toThrow(new RegExp(`corpus is capped at ${MAX_TRACKED_PRODUCTS} products`))
+  })
+
+  it('does not count archived products against the cap', () => {
+    const database = openDatabase(':memory:')
+    db = database
+    database.prepare(`
+      WITH RECURSIVE ids(value) AS (
+        SELECT 1 UNION ALL SELECT value + 1 FROM ids WHERE value < ?
+      )
+      INSERT INTO products (asin, addedAt, source, isArchived)
+      SELECT printf('A%09d', value), '2026-01-01T00:00:00.000Z', 'import', 1 FROM ids
+    `).run(MAX_TRACKED_PRODUCTS)
+    // Every row is archived, so a fresh product should still fit under the cap.
+    expect(createProduct(database, { asin: 'ROOM_TO_SPARE' })?.asin).toBe('ROOM_TO_SPARE')
   })
 
   it('round-trips snapshots and applies time-window queries with price fallback', () => {
@@ -156,6 +176,61 @@ describe('SQLite schema and repositories', () => {
     expect(latestTwoForAsin(db, 'A1').map(({ buyBoxPrice }) => buyBoxPrice)).toEqual([20, null])
     expect(seriesForAsin(db, 'A1', 1.5, new Date('2026-01-03T00:00:00.000Z'))).toHaveLength(2)
     expect(maxPriceInWindow(db, 'A1', 36, new Date('2026-01-03T00:00:00.000Z'))).toBe(25)
+  })
+
+  it('isObservation is false only for an all-null miss row', () => {
+    expect(isObservation({
+      buyBoxPrice: null, lowestNewPrice: null, lowestFbaPrice: null,
+      offerCount: null, fbaOfferCount: null, salesRank: null,
+    })).toBe(false)
+    expect(isObservation({
+      buyBoxPrice: null, lowestNewPrice: null, lowestFbaPrice: null,
+      offerCount: 0, fbaOfferCount: 0, salesRank: null,
+    })).toBe(true)
+    expect(isObservation({
+      buyBoxPrice: null, lowestNewPrice: null, lowestFbaPrice: null,
+      offerCount: null, fbaOfferCount: null, salesRank: 500,
+    })).toBe(true)
+  })
+
+  it('latestTwoForAsin skips miss rows and returns the two most recent real observations', () => {
+    db = openDatabase(':memory:')
+    insertSnapshot(db, {
+      asin: 'A1', ts: '2026-01-01T00:00:00.000Z', buyBoxPrice: 30,
+      lowestNewPrice: null, lowestFbaPrice: null, offerCount: 2,
+      fbaOfferCount: 1, salesRank: 100, rankCategory: 'Tools',
+    })
+    // Miss row sandwiched between two real observations: SP-API chunk
+    // failure inserted a row with every metric null (DESIGN.md:77-79
+    // requires the insert; it must not be readable back as a real value).
+    insertSnapshot(db, {
+      asin: 'A1', ts: '2026-01-02T00:00:00.000Z', buyBoxPrice: null,
+      lowestNewPrice: null, lowestFbaPrice: null, offerCount: null,
+      fbaOfferCount: null, salesRank: null, rankCategory: null,
+    })
+    insertSnapshot(db, {
+      asin: 'A1', ts: '2026-01-03T00:00:00.000Z', buyBoxPrice: 20,
+      lowestNewPrice: null, lowestFbaPrice: null, offerCount: 2,
+      fbaOfferCount: 1, salesRank: 90, rankCategory: 'Tools',
+    })
+    // latestSnapshotForAsin (unfiltered) sees the miss row's ts is not the
+    // latest here, but latestTwoForAsin must skip it entirely regardless
+    // of position, returning the two real observations.
+    const pair = latestTwoForAsin(db, 'A1')
+    expect(pair.map((s) => s.ts)).toEqual(['2026-01-03T00:00:00.000Z', '2026-01-01T00:00:00.000Z'])
+    expect(pair.map((s) => s.buyBoxPrice)).toEqual([20, 30])
+    expect(latestObservationForAsin(db, 'A1')?.ts).toBe('2026-01-03T00:00:00.000Z')
+  })
+
+  it('latestObservationForAsin returns undefined when only a miss row exists', () => {
+    db = openDatabase(':memory:')
+    insertSnapshot(db, {
+      asin: 'A1', ts: '2026-01-01T00:00:00.000Z', buyBoxPrice: null,
+      lowestNewPrice: null, lowestFbaPrice: null, offerCount: null,
+      fbaOfferCount: null, salesRank: null, rankCategory: null,
+    })
+    expect(latestSnapshotForAsin(db, 'A1')).toBeDefined()
+    expect(latestObservationForAsin(db, 'A1')).toBeUndefined()
   })
 
   it('round-trips alerts, events, seed queries, and settings updates', () => {
@@ -284,5 +359,50 @@ describe('tier-aware sweep scheduling', () => {
     db = openDatabase(databasePath)
     expect(getProductByAsin(db, 'A1')?.tier).toBe('cold')
     expect(getSettings(db)).toMatchObject({ coldSweepCursor: 0, coldSweepDivisor: 1 }) // tiering is opt-in
+  })
+})
+
+describe('observation predicate consistency', () => {
+  let db: DatabaseHandle | undefined
+  afterEach(() => db?.close())
+
+  // isObservation() and OBSERVATION_SQL are the same rule expressed twice —
+  // once in JS, once in SQL. Nothing structurally keeps them in sync, and a
+  // constant drifting from its twin is exactly the bug that let the corpus
+  // cap say 5,000 while the real limit was 20,000. This asserts every metric
+  // column agrees in BOTH, so adding a column to snapshots without updating
+  // both expressions fails loudly here.
+  const METRICS = [
+    'buyBoxPrice', 'lowestNewPrice', 'lowestFbaPrice',
+    'offerCount', 'fbaOfferCount', 'salesRank',
+  ] as const
+
+  it('JS and SQL agree for every metric column, and on the all-null miss row', () => {
+    const database = openDatabase(':memory:')
+    db = database
+    const nulls = {
+      buyBoxPrice: null, lowestNewPrice: null, lowestFbaPrice: null,
+      offerCount: null, fbaOfferCount: null, salesRank: null,
+    }
+    const sqlSaysObservation = (asin: string): boolean =>
+      (database.prepare(
+        `SELECT COUNT(*) AS c FROM snapshots WHERE asin = ? AND ${OBSERVATION_SQL}`,
+      ).get(asin) as { c: number }).c > 0
+
+    METRICS.forEach((metric, index) => {
+      const asin = `OBS${index}`
+      const row = { ...nulls, [metric]: 1 }
+      insertSnapshot(database, {
+        asin, ts: `2026-01-0${index + 1}T00:00:00.000Z`, rankCategory: null, ...row,
+      })
+      expect(isObservation(row), `${metric} (JS)`).toBe(true)
+      expect(sqlSaysObservation(asin), `${metric} (SQL)`).toBe(true)
+    })
+
+    insertSnapshot(database, {
+      asin: 'MISSROW', ts: '2026-02-01T00:00:00.000Z', rankCategory: 'Tools', ...nulls,
+    })
+    expect(isObservation(nulls)).toBe(false)
+    expect(sqlSaysObservation('MISSROW')).toBe(false)
   })
 })

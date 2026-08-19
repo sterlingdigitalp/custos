@@ -15,7 +15,7 @@ import {
   getMappingByAsin,
   getMappingByCanonicalId,
   getSettings,
-  latestSnapshotForAsin,
+  latestObservationForAsin,
   type Snapshot,
 } from '../db/repo.js'
 import type { DatabaseHandle } from '../db/schema.js'
@@ -200,7 +200,9 @@ export function buildHistoryContribution(
     return absentContribution(SOURCE, asOfNow)
   }
 
-  const latest = latestSnapshotForAsin(db, asin)
+  // The latest OBSERVATION, not the latest row — a miss row (SP-API chunk
+  // failure, every metric null) must never be reported as "current".
+  const latest = latestObservationForAsin(db, asin)
   if (!latest) {
     return unavailableContribution(SOURCE, asOfNow, 'NEVER_SYNCED')
   }

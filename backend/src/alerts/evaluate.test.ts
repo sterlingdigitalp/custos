@@ -86,7 +86,10 @@ describe('evaluateAlerts', () => {
 
   it('fires back_in_stock on unavailable-to-available transition', () => {
     createAlert(db, { asin: 'A1', ruleType: 'back_in_stock' })
-    addSnapshot(db, 1, {})
+    // A genuine "no offers" observation (offerCount: 0, not null) — distinct
+    // from a miss row, which has offerCount null. Catalog still resolved,
+    // so this is a real observation of an out-of-stock ASIN.
+    addSnapshot(db, 1, { offerCount: 0, fbaOfferCount: 0, salesRank: 500 })
     addSnapshot(db, 0, { offerCount: 1 })
     expect(evaluateAlerts(db, NOW)).toBe(1)
     expect(listUnreadAlertEvents(db)[0].message).toContain('A1 is back in stock')
@@ -96,6 +99,33 @@ describe('evaluateAlerts', () => {
     createAlert(db, { asin: 'A1', ruleType: 'back_in_stock' })
     addSnapshot(db, 1, { lowestFbaPrice: 20 })
     addSnapshot(db, 0, { offerCount: 1, lowestFbaPrice: 21 })
+    expect(evaluateAlerts(db, NOW)).toBe(0)
+  })
+
+  it('THE HEADLINE TEST: a miss row (SP-API chunk failure, every metric null) between two real observations does not fire back_in_stock', () => {
+    createAlert(db, { asin: 'A1', ruleType: 'back_in_stock' })
+    // Real observation: genuinely out of stock (offerCount 0, not null).
+    addSnapshot(db, 2, { offerCount: 0, fbaOfferCount: 0, salesRank: 500 })
+    // Miss row: the sweep chunk failed entirely for this ASIN — every
+    // metric is null. This must never read as "still out of stock" nor as
+    // "back in stock"; it must be invisible to the transition rule.
+    addSnapshot(db, 1, {})
+    // Real observation: still out of stock. If the miss row were
+    // misread as a restock-eligible "previous", or as itself "back in
+    // stock", this would (wrongly) fire.
+    addSnapshot(db, 0, { offerCount: 0, fbaOfferCount: 0, salesRank: 500 })
+    expect(evaluateAlerts(db, NOW)).toBe(0)
+    expect(listUnreadAlertEvents(db)).toEqual([])
+  })
+
+  it('a miss row does not fire a buybox_change transition either', () => {
+    createAlert(db, { asin: 'A1', ruleType: 'buybox_change' })
+    addSnapshot(db, 2, { buyBoxPrice: 20 })
+    addSnapshot(db, 1, {}) // miss row: every metric null
+    addSnapshot(db, 0, { buyBoxPrice: 20 })
+    // latestTwoForAsin skips the miss row, so this compares 20 -> 20: no
+    // real change, and the miss row's null buyBoxPrice never appears as
+    // either side of the comparison.
     expect(evaluateAlerts(db, NOW)).toBe(0)
   })
 

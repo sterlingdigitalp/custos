@@ -145,4 +145,34 @@ describe('detectAndRecordSpikes', () => {
     expect(result.emitted).toBe(0)
     expect(duePendingEvents(db, new Date().toISOString())).toHaveLength(0)
   })
+
+  it('with an ASIN list, inspects only those ASINs and never touches the others', () => {
+    createProduct(db, { asin: 'B00INLIST' })
+    // Same spike-worthy rank pair on BOTH — only the listed one may be
+    // checked/recorded/emitted; the other must be untouched even though it
+    // would trigger a spike if it were scanned.
+    seedPair(db, 'B00INLIST', 5000, 2000)
+    createProduct(db, { asin: 'B00NOTLISTED' })
+    seedPair(db, 'B00NOTLISTED', 5000, 2000)
+
+    const result = detectAndRecordSpikes(db, null, { asins: ['B00INLIST'] })
+    expect(result.checked).toBe(1)
+    expect(result.recorded).toBe(1)
+
+    const inList = db.prepare('SELECT * FROM history_spikes WHERE asin = ?').get('B00INLIST')
+    const notListed = db.prepare('SELECT * FROM history_spikes WHERE asin = ?').get('B00NOTLISTED')
+    expect(inList).toBeTruthy()
+    expect(notListed).toBeUndefined()
+  })
+
+  it('omitting the ASIN list still scans the full corpus', () => {
+    createProduct(db, { asin: 'B00A' })
+    seedPair(db, 'B00A', 5000, 2000)
+    createProduct(db, { asin: 'B00B' })
+    seedPair(db, 'B00B', 5000, 2000)
+
+    const result = detectAndRecordSpikes(db, null)
+    expect(result.checked).toBe(2)
+    expect(result.recorded).toBe(2)
+  })
 })

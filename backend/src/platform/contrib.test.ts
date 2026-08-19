@@ -283,6 +283,29 @@ describe('buildHistoryContribution', () => {
     })
   })
 
+  it('reports the latest OBSERVATION, not a miss row, as current', () => {
+    seedMapping(db)
+    seedSnapshot(db, ASIN, '2026-07-17T11:00:00.000Z', {
+      buyBox: 19.99, rank: 850, offers: 5, fbaOffers: 3,
+    })
+    // A miss row inserted after the real observation: SP-API chunk failed
+    // entirely for this ASIN (DESIGN.md:77-79 still requires the row), so
+    // every metric is null. It must never be reported as "current".
+    insertSnapshot(db, {
+      asin: ASIN, ts: '2026-07-17T11:30:00.000Z',
+      buyBoxPrice: null, lowestNewPrice: null, lowestFbaPrice: null,
+      offerCount: null, fbaOfferCount: null, salesRank: null, rankCategory: null,
+    })
+
+    const c = buildHistoryContribution(db, { productId: PRODUCT_ID }, { now: NOW })
+    const data = c.data as Record<string, unknown>
+    expect(data.currentBuyBox).toEqual({ amount: '19.99', currency: 'USD' })
+    expect(data.currentRank).toBe(850)
+    expect(data.offerCount).toBe(5)
+    expect(data.fbaOfferCount).toBe(3)
+    expect(c.asOf).toBe('2026-07-17T11:00:00.000Z')
+  })
+
   it('returns stale when latest snapshot is older than 2×sweepInterval', () => {
     seedMapping(db)
     updateSettings(db, { sweepIntervalMin: 60 })

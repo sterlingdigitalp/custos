@@ -324,6 +324,49 @@ describe('buildMergedSegments', () => {
     expect(buildMergedSegments(db, ASIN, 'buybox', { now: NOW })).toEqual([])
     expect(buildMergedSegments(db, ASIN, 'amazon', { now: NOW })).toEqual([])
   })
+
+  it('a miss row does not count as sweep-covered: it neither blocks the Keepa fallback nor produces a bogus null value', () => {
+    const sweepIntervalMin = 60 // delta = 2h coverage padding per real sweep row
+
+    // Keepa: one wide segment (9000) spanning the whole window under test.
+    insertKeepaPoint(db, ASIN, 'buybox', NOW_MS - 8 * HOUR_MS, 9_000)
+    insertKeepaPoint(db, ASIN, 'buybox', NOW_MS - 0.5 * HOUR_MS, 9_900)
+
+    // Sweep: a real row at -6h, then a MISS ROW at -4h (every metric null —
+    // a total SP-API chunk failure, DESIGN.md:77-79 requires the insert),
+    // then a real row at -1h. -6h and -1h are 5h apart — too far for their
+    // own 2h coverage padding to bridge on their own. The buggy behavior
+    // this guards against: counting the -4h miss row's padding to bridge
+    // the gap (wrongly blocking Keepa) and reading its null buyBoxPrice as
+    // a real "fresh null" sweep value for that slice.
+    insertSnapshot(db, {
+      asin: ASIN, ts: new Date(NOW_MS - 6 * HOUR_MS).toISOString(),
+      buyBoxPrice: 10.0, lowestNewPrice: null, lowestFbaPrice: null,
+      offerCount: null, fbaOfferCount: null, salesRank: null, rankCategory: null,
+    })
+    insertSnapshot(db, {
+      asin: ASIN, ts: new Date(NOW_MS - 4 * HOUR_MS).toISOString(),
+      buyBoxPrice: null, lowestNewPrice: null, lowestFbaPrice: null,
+      offerCount: null, fbaOfferCount: null, salesRank: null, rankCategory: null,
+    })
+    insertSnapshot(db, {
+      asin: ASIN, ts: new Date(NOW_MS - 1 * HOUR_MS).toISOString(),
+      buyBoxPrice: 12.0, lowestNewPrice: null, lowestFbaPrice: null,
+      offerCount: null, fbaOfferCount: null, salesRank: null, rankCategory: null,
+    })
+
+    const segments = buildMergedSegments(db, ASIN, 'buybox', { now: NOW, sweepIntervalMin })
+
+    expect(segments).toEqual([
+      seg(NOW_MS - 8 * HOUR_MS, NOW_MS - 6 * HOUR_MS, 9_000, 'keepa'),
+      seg(NOW_MS - 6 * HOUR_MS, NOW_MS - 4 * HOUR_MS, 1_000, 'sweep'),
+      // The miss row at -4h is invisible: it does NOT bridge coverage, so
+      // this slice correctly falls back to Keepa's real value (9000) —
+      // never a null "fresh" sweep value from the miss row.
+      seg(NOW_MS - 4 * HOUR_MS, NOW_MS - 1 * HOUR_MS, 9_000, 'keepa'),
+      seg(NOW_MS - 1 * HOUR_MS, NOW_MS, 1_200, 'sweep'),
+    ])
+  })
 })
 
 // --- amazonPresence -----------------------------------------------------

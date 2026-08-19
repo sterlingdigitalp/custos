@@ -1,5 +1,6 @@
 import {
   insertAlertEvent,
+  isObservation,
   latestTwoForAsin,
   listActiveAlerts,
   maxPriceInWindow,
@@ -63,7 +64,17 @@ function evaluateRule(
     }
 
     case 'back_in_stock':
-      if (previous && !hasOfferOrPrice(previous) && hasOfferOrPrice(latest)) {
+      // A miss row (SP-API chunk failure — every metric null) must never
+      // satisfy either side of this transition: it means UNKNOWN, not
+      // "out of stock". `latestTwoForAsin` already skips miss rows, but
+      // guard here too so this rule can never misread one as a restock.
+      if (
+        previous &&
+        isObservation(previous) &&
+        isObservation(latest) &&
+        !hasOfferOrPrice(previous) &&
+        hasOfferOrPrice(latest)
+      ) {
         const detail = currentPrice === null ? 'with an available offer' : `at $${currentPrice.toFixed(2)}`
         return `${alert.asin} is back in stock ${detail}`
       }
