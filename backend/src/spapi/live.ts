@@ -1,3 +1,4 @@
+import { FetchTimeoutError, fetchWithTimeout } from '../net/fetchTimeout.js'
 import type { CatalogInfo, CustosApiClient, OfferSnapshot, SeedSearchResult } from './client.js'
 import { LwaTokenManager, type Fetch } from './lwa.js'
 
@@ -12,6 +13,8 @@ const DEFAULT_CATALOG_INTERVAL_MS = 600
 // An unbounded Retry-After (Amazon has sent values like 86400s) must never
 // park a sweep cycle for anywhere near that long.
 const MAX_RETRY_DELAY_MS = 60_000
+/** SP-API pricing/catalog batch budget — large payloads, worth more than LWA's. */
+export const SPAPI_REQUEST_TIMEOUT_MS = 30_000
 
 export interface LiveCustosClientSettings {
   lwaClientId: string
@@ -223,6 +226,7 @@ export class LiveCustosClient implements CustosApiClient {
     private readonly pricingIntervalMs = DEFAULT_PRICING_INTERVAL_MS,
     private readonly catalogIntervalMs = DEFAULT_CATALOG_INTERVAL_MS,
     now?: () => number,
+    private readonly timeoutMs = SPAPI_REQUEST_TIMEOUT_MS,
   ) {
     this.endpoint = endpointForRegion(settings.region)
     this.tokenManager = new LwaTokenManager({
@@ -346,14 +350,27 @@ export class LiveCustosClient implements CustosApiClient {
         ...init.headers,
       },
     }
-    let response = await this.fetchImpl(`${this.endpoint}${path}`, requestInit)
-    // A single retry for 429 (rate limit) or 5xx (transient server error) —
-    // a 5xx is otherwise indistinguishable from "Amazon has no data" once
-    // the chunk is swallowed. Retry-After is capped at 60s regardless of
-    // what Amazon sends.
+    const url = `${this.endpoint}${path}`
+    const attempt = (): Promise<Response> =>
+      fetchWithTimeout(this.fetchImpl, url, requestInit, this.timeoutMs, 'SP-API request')
+
+    // A single retry for 429 (rate limit), 5xx (transient server error), or a
+    // request timeout — all otherwise indistinguishable from "Amazon has no
+    // data" once the chunk is swallowed. Retry-After is capped at 60s
+    // regardless of what Amazon sends.
+    let response: Response
+    try {
+      response = await attempt()
+    } catch (error) {
+      if (!(error instanceof FetchTimeoutError)) throw error
+      await this.sleep(retryDelayMilliseconds(null))
+      response = await attempt()
+      if (!response.ok) throw await responseError(response)
+      return response
+    }
     if (isRetryableStatus(response.status)) {
       await this.sleep(retryDelayMilliseconds(response.headers.get('retry-after')))
-      response = await this.fetchImpl(`${this.endpoint}${path}`, requestInit)
+      response = await attempt()
     }
     if (!response.ok) throw await responseError(response)
     return response

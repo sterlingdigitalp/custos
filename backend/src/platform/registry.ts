@@ -6,12 +6,16 @@
 
 import { isCanonicalId } from '@platform/contract'
 
+import { fetchWithTimeout } from '../net/fetchTimeout.js'
 import type { HubConfig } from './config.js'
 
 export type FetchLike = typeof fetch
 export type SleepFn = (ms: number) => Promise<void>
 
 const RETRY_BACKOFF_MS = [1_000, 2_000, 4_000] as const
+
+/** Hub registry resolve budget. */
+export const HUB_REGISTRY_TIMEOUT_MS = 10_000
 
 export class HubAuthError extends Error {
   constructor(
@@ -65,6 +69,7 @@ export class RegistryClient {
     private readonly config: HubConfig,
     fetchImpl: FetchLike = globalThis.fetch.bind(globalThis),
     sleep: SleepFn = defaultSleep,
+    private readonly timeoutMs: number = HUB_REGISTRY_TIMEOUT_MS,
   ) {
     this.fetchImpl = fetchImpl
     this.sleep = sleep
@@ -89,7 +94,7 @@ export class RegistryClient {
 
       let res: Response
       try {
-        res = await this.fetchImpl(url, {
+        res = await fetchWithTimeout(this.fetchImpl, url, {
           method: 'POST',
           headers: {
             Authorization: `Bearer ${this.config.token}`,
@@ -97,7 +102,7 @@ export class RegistryClient {
             Accept: 'application/json',
           },
           body: JSON.stringify(body),
-        })
+        }, this.timeoutMs, 'Hub registry resolve')
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err))
         if (attempt === RETRY_BACKOFF_MS.length) {

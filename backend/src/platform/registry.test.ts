@@ -177,4 +177,40 @@ describe('RegistryClient.resolveProduct', () => {
     await expect(client.resolveProduct({ asin: 'B00BAD' }))
       .rejects.toThrow(/non-canonical productId/)
   })
+
+  it('a hung fetch times out, retries with backoff, and fails (not treated as a resolved/empty result) — never leaking the bearer token', async () => {
+    let calls = 0
+    const fetchImpl: FetchLike = () => {
+      calls += 1
+      return new Promise<Response>(() => {})
+    }
+    const sleeps: number[] = []
+    const client = new RegistryClient(HUB, fetchImpl, async (ms) => { sleeps.push(ms) }, 20)
+    const start = Date.now()
+    let message = ''
+    try {
+      await client.resolveProduct({ asin: 'B00TIMEOUT' })
+      throw new Error('expected resolveProduct to reject')
+    } catch (error) {
+      message = error instanceof Error ? error.message : String(error)
+    }
+    expect(Date.now() - start).toBeLessThan(2_000)
+    expect(calls).toBe(4)
+    expect(sleeps).toEqual([1_000, 2_000, 4_000])
+    expect(message).toContain('20ms')
+    expect(message).not.toContain(HUB.token)
+  })
+
+  it('is unaffected when fetch resolves normally (no regression)', async () => {
+    const fetchImpl: FetchLike = async () => jsonResponse({
+      status: 'resolved',
+      productId: PRODUCT_ID,
+      registryVersion: 1,
+      created: false,
+      conflictId: null,
+    })
+    const client = new RegistryClient(HUB, fetchImpl, async () => {}, 20)
+    await expect(client.resolveProduct({ asin: 'B00OK' }))
+      .resolves.toMatchObject({ productId: PRODUCT_ID })
+  })
 })

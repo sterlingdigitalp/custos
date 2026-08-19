@@ -55,4 +55,26 @@ describe('deliverPending', () => {
       delivered: true, deliveryError: 'no channel configured', isRead: false,
     })
   })
+
+  it('records a timeout as a failure — not a silent delivered — when fetch never resolves', async () => {
+    pending()
+    const settings = updateSettings(db, { ntfyServer: 'https://ntfy.test/', ntfyTopic: 'custos' })
+    const fetchImpl: Fetch = () => new Promise<Response>(() => {})
+    const start = Date.now()
+    await expect(deliverPending(db, settings, fetchImpl, 20)).resolves.toEqual({
+      pending: 1, delivered: 0, failed: 1,
+    })
+    expect(Date.now() - start).toBeLessThan(2_000)
+    const event = listAlertEvents(db)[0]
+    expect(event.delivered).toBe(false)
+    expect(event.deliveryError).toContain('20ms')
+  })
+
+  it('is unaffected when fetch resolves normally (no regression)', async () => {
+    pending()
+    const settings = updateSettings(db, { ntfyServer: 'https://ntfy.test/', ntfyTopic: 'custos' })
+    await expect(deliverPending(db, settings, async () => new Response('ok'), 20)).resolves.toEqual({
+      pending: 1, delivered: 1, failed: 0,
+    })
+  })
 })

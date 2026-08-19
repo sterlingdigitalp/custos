@@ -7,6 +7,10 @@ import {
   KeepaTransientError,
 } from './client.js'
 
+function neverResolves(): Promise<Response> {
+  return new Promise<Response>(() => {})
+}
+
 function jsonResponse(body: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -149,6 +153,39 @@ describe('KeepaClient', () => {
       await client.getProducts(['B00FLYWNYQ'])
     } catch (err) {
       expect(String(err)).not.toContain(secret)
+    }
+  })
+
+  it('rejects with a retryable KeepaTransientError — not an empty result — when fetch never resolves', async () => {
+    const secret = 'super-secret-key-xyz'
+    const client = new KeepaClient({
+      apiKey: secret,
+      maxAttempts: 2,
+      timeoutMs: 15,
+      sleep: async () => {},
+      fetchImpl: neverResolves,
+    })
+    const start = Date.now()
+    await expect(client.getProducts(['B00FLYWNYQ'])).rejects.toBeInstanceOf(KeepaTransientError)
+    expect(Date.now() - start).toBeLessThan(2_000)
+  })
+
+  it('timeout error message states the elapsed budget and never includes the key', async () => {
+    const secret = 'super-secret-key-xyz'
+    const client = new KeepaClient({
+      apiKey: secret,
+      maxAttempts: 1,
+      timeoutMs: 15,
+      sleep: async () => {},
+      fetchImpl: neverResolves,
+    })
+    try {
+      await client.getProducts(['B00FLYWNYQ'])
+      throw new Error('expected getProducts to reject')
+    } catch (err) {
+      const message = String(err)
+      expect(message).toContain('15ms')
+      expect(message).not.toContain(secret)
     }
   })
 })

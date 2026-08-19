@@ -1,9 +1,14 @@
 // Keepa Product API client (injectable fetch). Never logs the API key.
 
+import { FetchTimeoutError, fetchWithTimeout } from '../net/fetchTimeout.js'
+
 export type FetchImpl = (
   input: string | URL,
   init?: RequestInit,
 ) => Promise<Response>
+
+/** Keepa product batches can carry large gzip payloads — give them room. */
+export const KEEPA_REQUEST_TIMEOUT_MS = 30_000
 
 export interface KeepaProductResponse {
   products: Array<Record<string, unknown> | null>
@@ -55,6 +60,8 @@ export interface KeepaClientOptions {
   /** Max attempts for 5xx/network (default 3). */
   maxAttempts?: number
   sleep?: (ms: number) => Promise<void>
+  /** Per-attempt fetch timeout budget (default KEEPA_REQUEST_TIMEOUT_MS). */
+  timeoutMs?: number
 }
 
 const DEFAULT_MAX_ATTEMPTS = 3
@@ -75,6 +82,10 @@ function isNetworkError(err: unknown): boolean {
   )) {
     return true
   }
+  // A request timeout is a transient failure — feed it into the same
+  // backoff/retry path as any other network error, never surface it as an
+  // empty result.
+  if (err instanceof FetchTimeoutError) return true
   return err.name === 'TypeError' || /fetch failed|network/i.test(err.message)
 }
 
@@ -84,6 +95,7 @@ export class KeepaClient {
   private readonly domain: number
   private readonly maxAttempts: number
   private readonly sleep: (ms: number) => Promise<void>
+  private readonly timeoutMs: number
 
   constructor(options: KeepaClientOptions) {
     if (!options.apiKey || options.apiKey.trim() === '') {
@@ -94,6 +106,7 @@ export class KeepaClient {
     this.domain = options.domain ?? 1
     this.maxAttempts = options.maxAttempts ?? DEFAULT_MAX_ATTEMPTS
     this.sleep = options.sleep ?? defaultSleep
+    this.timeoutMs = options.timeoutMs ?? KEEPA_REQUEST_TIMEOUT_MS
   }
 
   /**
@@ -120,10 +133,10 @@ export class KeepaClient {
     for (let attempt = 1; attempt <= this.maxAttempts; attempt += 1) {
       let response: Response
       try {
-        response = await this.fetchImpl(url.toString(), {
+        response = await fetchWithTimeout(this.fetchImpl, url.toString(), {
           method: 'GET',
           headers: { Accept: 'application/json' },
-        })
+        }, this.timeoutMs, 'Keepa product request')
       } catch (err) {
         lastError = err instanceof Error ? err : new Error(String(err))
         if (!isNetworkError(err) || attempt === this.maxAttempts) {

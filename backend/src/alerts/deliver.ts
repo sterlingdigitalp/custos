@@ -1,7 +1,11 @@
 import { updateAlertEventDelivery, type Settings } from '../db/repo.js'
 import type { DatabaseHandle } from '../db/schema.js'
+import { fetchWithTimeout } from '../net/fetchTimeout.js'
 
 export type Fetch = typeof fetch
+
+/** ntfy push budget. */
+export const NTFY_TIMEOUT_MS = 10_000
 
 export interface DeliverySummary {
   pending: number
@@ -17,6 +21,7 @@ export async function deliverPending(
   db: DatabaseHandle,
   settings: Settings,
   fetchImpl: Fetch = globalThis.fetch,
+  timeoutMs: number = NTFY_TIMEOUT_MS,
 ): Promise<DeliverySummary> {
   const events = db.prepare(`
     SELECT id, asin, message FROM alert_events WHERE delivered = 0 ORDER BY id
@@ -32,7 +37,7 @@ export async function deliverPending(
 
     const url = `${settings.ntfyServer.replace(/\/+$/, '')}/${encodeURIComponent(settings.ntfyTopic)}`
     try {
-      const response = await fetchImpl(url, {
+      const response = await fetchWithTimeout(fetchImpl, url, {
         method: 'POST',
         headers: {
           Title: 'Custos',
@@ -40,7 +45,7 @@ export async function deliverPending(
           'content-type': 'text/plain; charset=utf-8',
         },
         body: event.message,
-      })
+      }, timeoutMs, 'ntfy delivery')
       if (!response.ok) {
         const detail = (await response.text()).trim()
         throw new Error(`ntfy request failed (${response.status})${detail ? `: ${detail}` : ''}`)

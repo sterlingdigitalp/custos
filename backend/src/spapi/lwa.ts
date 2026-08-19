@@ -1,4 +1,9 @@
+import { fetchWithTimeout } from '../net/fetchTimeout.js'
+
 export type Fetch = typeof fetch
+
+/** LWA token exchange budget — Amazon's auth endpoint, not the data APIs. */
+export const LWA_TOKEN_TIMEOUT_MS = 15_000
 
 export interface LwaCredentials {
   clientId: string
@@ -37,13 +42,14 @@ export class LwaTokenManager {
     private readonly credentials: LwaCredentials,
     private readonly fetchImpl: Fetch = globalThis.fetch,
     private readonly now: () => number = Date.now,
+    private readonly timeoutMs: number = LWA_TOKEN_TIMEOUT_MS,
   ) {}
 
   async getAccessToken(): Promise<string> {
     if (this.accessToken !== null && this.now() < this.expiresAt - EXPIRY_BUFFER_MS) {
       return this.accessToken
     }
-    const response = await this.fetchImpl(LWA_TOKEN_URL, {
+    const response = await fetchWithTimeout(this.fetchImpl, LWA_TOKEN_URL, {
       method: 'POST',
       headers: { 'content-type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
@@ -52,7 +58,7 @@ export class LwaTokenManager {
         client_secret: this.credentials.clientSecret,
         refresh_token: this.credentials.refreshToken,
       }),
-    })
+    }, this.timeoutMs, 'LWA token exchange')
     if (!response.ok) {
       throw new Error(`LWA token exchange failed (${response.status}): ${await responseDetail(response)}`)
     }

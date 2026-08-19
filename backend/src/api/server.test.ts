@@ -7,6 +7,7 @@ import {
   getSettings,
   insertAlertEvent,
   insertSnapshot,
+  updateSettings,
 } from '../db/repo.js'
 import { openDatabase, type DatabaseHandle } from '../db/schema.js'
 import type { SchedulerStatus } from '../scheduler/loop.js'
@@ -208,6 +209,40 @@ describe('Fastify API', () => {
       payload: { lwaClientSecret: '***set***', refreshToken: '***set***' },
     })
     expect(getSettings(db)).toMatchObject({ lwaClientSecret: 'secret', refreshToken: 'refresh' })
+  })
+
+  it('POST /api/settings/test-notification: a hung ntfy fetch times out as a 502 failure — not a hang — and never leaks credentials', async () => {
+    updateSettings(db, { ntfyServer: 'https://ntfy.test/', ntfyTopic: 'my-topic' })
+    await server.close()
+    server = buildServer(db, {
+      client,
+      scheduler: { getStatus: () => stoppedStatus },
+      now: () => NOW,
+      fetchImpl: (() => new Promise<Response>(() => {})) as unknown as typeof fetch,
+      notifyTimeoutMs: 20,
+    })
+    const start = Date.now()
+    const response = await server.inject({ method: 'POST', url: '/api/settings/test-notification' })
+    expect(Date.now() - start).toBeLessThan(2_000)
+    expect(response.statusCode).toBe(502)
+    const body = response.json()
+    expect(body.error).toContain('20ms')
+    expect(body.error).not.toContain('my-topic')
+  })
+
+  it('POST /api/settings/test-notification: unaffected when fetch resolves normally (no regression)', async () => {
+    updateSettings(db, { ntfyServer: 'https://ntfy.test/', ntfyTopic: 'my-topic' })
+    await server.close()
+    server = buildServer(db, {
+      client,
+      scheduler: { getStatus: () => stoppedStatus },
+      now: () => NOW,
+      fetchImpl: (async () => new Response('ok')) as unknown as typeof fetch,
+      notifyTimeoutMs: 20,
+    })
+    const response = await server.inject({ method: 'POST', url: '/api/settings/test-notification' })
+    expect(response.statusCode).toBe(200)
+    expect(response.json()).toEqual({ ok: true })
   })
 
   it('lists unread events and marks selected ids read', async () => {

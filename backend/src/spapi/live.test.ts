@@ -235,4 +235,56 @@ describe('LiveCustosClient', () => {
     expect(result.items[0]).toMatchObject({ asin: 'A1', title: 'Lamp' })
     expect(new URL(requestUrl).searchParams.get('pageToken')).toBe('PAGE')
   })
+
+  it('a hung pricing request times out, retries once (like a 5xx), and is counted as a chunk failure — not an empty-but-successful result', async () => {
+    const delays: number[] = []
+    const fetchImpl: Fetch = async (input) => {
+      if (String(input).includes('/auth/o2/token')) return json({ access_token: 'token', expires_in: 3600 })
+      return new Promise<Response>(() => {}) // never resolves — simulates a wedged socket
+    }
+    const client = new LiveCustosClient(
+      settings(), fetchImpl, async (ms) => { delays.push(ms) }, 10_000, 600, undefined, 15,
+    )
+    const start = Date.now()
+    const results = await client.getOffers(['A1'])
+    expect(Date.now() - start).toBeLessThan(2_000)
+    expect(results).toEqual([])
+    expect(client.getLastChunkFailures()).toEqual({ pricing: 1, catalog: 0 })
+  })
+
+  it('timeout error message states the elapsed budget and never leaks LWA credentials', async () => {
+    const logs: string[] = []
+    const originalError = console.error
+    console.error = (...args: unknown[]) => { logs.push(args.map(String).join(' ')) }
+    try {
+      const fetchImpl: Fetch = async (input) => {
+        if (String(input).includes('/auth/o2/token')) return json({ access_token: 'token', expires_in: 3600 })
+        return new Promise<Response>(() => {})
+      }
+      const client = new LiveCustosClient(
+        settings(), fetchImpl, async () => {}, 10_000, 600, undefined, 15,
+      )
+      await client.getOffers(['A1'])
+      const combined = logs.join('\n')
+      expect(combined).toContain('15ms')
+      expect(combined).not.toContain('secret')
+      expect(combined).not.toContain('refresh')
+    } finally {
+      console.error = originalError
+    }
+  })
+
+  it('is unaffected when the pricing fetch resolves normally (no regression)', async () => {
+    const fetchImpl: Fetch = async (input, init) => {
+      if (String(input).includes('/auth/o2/token')) return json({ access_token: 'token', expires_in: 3600 })
+      const body = JSON.parse(String(init?.body)) as { requests: Array<{ uri: string }> }
+      return json({ responses: body.requests.map(({ uri }) => ({
+        status: { statusCode: 200 }, request: { uri }, body: { payload: { ASIN: 'A1', Offers: [] } },
+      })) })
+    }
+    const client = new LiveCustosClient(settings(), fetchImpl, async () => {}, 10_000, 600, undefined, 15)
+    const results = await client.getOffers(['A1'])
+    expect(results.map(({ asin }) => asin)).toEqual(['A1'])
+    expect(client.getLastChunkFailures()).toEqual({ pricing: 0, catalog: 0 })
+  })
 })

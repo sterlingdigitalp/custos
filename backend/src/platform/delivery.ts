@@ -2,6 +2,7 @@
 // Drains due platform_outbox pending rows and POSTs each to POST ${baseUrl}/events.
 
 import type { DatabaseHandle } from '../db/schema.js'
+import { fetchWithTimeout } from '../net/fetchTimeout.js'
 import {
   duePendingEvents,
   markDelivered,
@@ -9,6 +10,9 @@ import {
   markRetry,
   type OutboxRecord,
 } from './outbox.js'
+
+/** Hub outbox POST budget. */
+export const HUB_OUTBOX_TIMEOUT_MS = 10_000
 
 export interface HubEndpointConfig {
   baseUrl: string
@@ -18,6 +22,7 @@ export interface HubEndpointConfig {
 export interface HubDeliveryDeps {
   fetch?: typeof fetch
   now?: () => number
+  timeoutMs?: number
 }
 
 export interface HubDeliveryTickResult {
@@ -72,6 +77,7 @@ export class HubDeliveryWorker {
   private readonly hub: HubEndpointConfig | undefined
   private readonly fetchImpl: typeof fetch
   private readonly now: () => number
+  private readonly timeoutMs: number
   /** Set true after 401/403 — surfaces for operator visibility. */
   private halted = false
 
@@ -80,6 +86,7 @@ export class HubDeliveryWorker {
     this.hub = hub
     this.fetchImpl = deps.fetch ?? fetch
     this.now = deps.now ?? (() => Date.now())
+    this.timeoutMs = deps.timeoutMs ?? HUB_OUTBOX_TIMEOUT_MS
   }
 
   get isHalted(): boolean {
@@ -124,14 +131,14 @@ export class HubDeliveryWorker {
   ): Promise<DeliverOutcome> {
     let res: Response
     try {
-      res = await this.fetchImpl(`${hub.baseUrl}/events`, {
+      res = await fetchWithTimeout(this.fetchImpl, `${hub.baseUrl}/events`, {
         method: 'POST',
         headers: {
           Authorization: `Bearer ${hub.token}`,
           'Content-Type': 'application/json',
         },
         body: record.envelope,
-      })
+      }, this.timeoutMs, 'Hub outbox delivery')
     } catch (err) {
       this.scheduleRetry(record, null, nowMs, err instanceof Error ? err.message : String(err))
       return 'retried'

@@ -213,6 +213,37 @@ describe('HubDeliveryWorker.tick', () => {
     expect(rowFor(db, eventId).last_error).toBe('ECONNRESET')
   })
 
+  it('a hung fetch times out and is retried — not silently dropped — and never leaks the bearer token', async () => {
+    const eventId = newId('evt')
+    enqueueOutboxEvent(db, { eventId, eventType: 't', envelope: testEnvelope(eventId) })
+    const worker = new HubDeliveryWorker(db, configuredHub(), {
+      fetch: (() => new Promise<Response>(() => {})) as unknown as typeof fetch,
+      timeoutMs: 20,
+    })
+    const start = Date.now()
+    const result = await worker.tick()
+    expect(Date.now() - start).toBeLessThan(2_000)
+    expect(result.retried).toBe(1)
+    const row = rowFor(db, eventId)
+    expect(row.status).toBe('pending')
+    expect(String(row.last_error)).toContain('20ms')
+    expect(String(row.last_error)).not.toContain('hub-tok')
+  })
+
+  it('is unaffected when fetch resolves normally (no regression)', async () => {
+    const eventId = newId('evt')
+    enqueueOutboxEvent(db, { eventId, eventType: 't', envelope: testEnvelope(eventId) })
+    const worker = new HubDeliveryWorker(db, configuredHub(), {
+      fetch: (async () => new Response(
+        JSON.stringify({ eventId, sequence: 1, receivedAt: '2026-07-13T00:00:00.000Z' }),
+        { status: 201 },
+      )) as typeof fetch,
+      timeoutMs: 20,
+    })
+    const result = await worker.tick()
+    expect(result.delivered).toBe(1)
+  })
+
   it('stops the batch before later records once a 401 is hit', async () => {
     const a = newId('evt')
     const b = newId('evt')

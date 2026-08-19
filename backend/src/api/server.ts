@@ -1,7 +1,7 @@
 import cors from '@fastify/cors'
 import Fastify, { type FastifyInstance } from 'fastify'
 
-import { deliverPending, type Fetch } from '../alerts/deliver.js'
+import { deliverPending, NTFY_TIMEOUT_MS, type Fetch } from '../alerts/deliver.js'
 import { evaluateAlerts } from '../alerts/evaluate.js'
 import { runSweep } from '../collector/sweep.js'
 import {
@@ -33,6 +33,7 @@ import type { DatabaseHandle } from '../db/schema.js'
 import { importSelleramp, parseSelleramp } from '../import/selleramp.js'
 import { computeCeilings } from '../keepa/ceilings.js'
 import { importKeepaStats, previewKeepaStats } from '../keepa/stats-import.js'
+import { fetchWithTimeout } from '../net/fetchTimeout.js'
 import { loadHubConfig } from '../platform/config.js'
 import { buildHistoryContribution } from '../platform/contrib.js'
 import { RegistryClient } from '../platform/registry.js'
@@ -53,6 +54,8 @@ export interface ServerDependencies {
   scheduler?: Pick<SchedulerController, 'getStatus'>
   fetchImpl?: Fetch
   now?: () => Date
+  /** Override for the test-notification route's ntfy timeout (tests only). */
+  notifyTimeoutMs?: number
 }
 
 class ApiError extends Error {
@@ -748,9 +751,12 @@ export function buildServer(db: DatabaseHandle, deps: ServerDependencies): Fasti
       throw new ApiError('ntfyTopic must be configured before testing notifications')
     }
     try {
-      const response = await (deps.fetchImpl ?? globalThis.fetch)(
+      const response = await fetchWithTimeout(
+        deps.fetchImpl ?? globalThis.fetch,
         `${settings.ntfyServer.replace(/\/+$/, '')}/${encodeURIComponent(settings.ntfyTopic)}`,
         { method: 'POST', headers: { Title: 'Custos' }, body: 'Custos test notification' },
+        deps.notifyTimeoutMs ?? NTFY_TIMEOUT_MS,
+        'ntfy test notification',
       )
       if (!response.ok) throw new Error(`ntfy test failed (${response.status})`)
       return { ok: true }
