@@ -198,3 +198,35 @@ describe('buildHistorySeries (KEEPA-BACKFILL K3 blended read)', () => {
     expect(elapsedMs).toBeLessThan(5_000)
   })
 })
+
+describe('buildHistorySeries — grid anchoring (production regression)', () => {
+  let db: DatabaseHandle | undefined
+  afterEach(() => db?.close())
+
+  // Caught only by querying real production data: the UI's "All" range sends
+  // days=36500, and anchoring the bucket grid at `now - days` started it in
+  // 1926. ~92% of buckets predated any data (66 of 800 rows carried a price)
+  // and all recent sweeps collapsed into a single bucket. The grid must span
+  // the ACTUAL data range, so every bucket lands where history exists.
+  it('days=36500 ("All") anchors the grid to the first real point, not now-100y', () => {
+    const database = openDatabase(':memory:')
+    db = database
+    const ASIN = 'B0ANCHOR01'
+    const firstMs = NOW_MS - 3 * 365 * DAY_MS // three years of history, nothing older
+
+    // Dense Keepa history over those three years only.
+    for (let i = 0; i < 4000; i += 1) {
+      pt(database, ASIN, 'buybox', firstMs + Math.round((i / 4000) * 3 * 365 * DAY_MS), 1_000 + i)
+    }
+
+    const rows = buildHistorySeries(database, ASIN, { days: 36_500, maxPoints: 400, now: NOW })
+
+    expect(rows.length).toBeLessThanOrEqual(400)
+    // No row may predate the earliest real datum — that was the 1926 bug.
+    expect(new Date(rows[0]!.ts).getTime()).toBeGreaterThanOrEqual(firstMs)
+    // And the grid must be DENSE: nearly every bucket carries a real price,
+    // rather than most falling into an empty prehistoric span.
+    const withPrice = rows.filter((r) => r.buyBoxPrice !== null).length
+    expect(withPrice).toBeGreaterThan(rows.length * 0.9)
+  })
+})

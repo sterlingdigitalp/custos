@@ -251,13 +251,22 @@ export function buildHistorySeries(
 
   // Downsample onto an evenly spaced grid, then append the true latest
   // observation exact and un-bucketed.
+  //
+  // The grid spans the ACTUAL data range (first..last breakpoint), NOT the
+  // requested window. The UI's "All" range sends days=36500, so anchoring the
+  // grid at `nowMs - days` put its start in 1926: ~92% of buckets landed
+  // before any data existed, real points collapsed into a handful of buckets
+  // (66 of 800 rows carried a price), and every recent sweep fell into one
+  // bucket. Clamping to the first real breakpoint keeps all maxPoints buckets
+  // inside the period that actually has history.
   const finalMs = sortedBreaks[sortedBreaks.length - 1]!
+  const gridStartMs = sortedBreaks[0]!
   const bucketCount = Math.max(1, maxPoints - 1)
-  const span = finalMs - windowStartMs
+  const span = finalMs - gridStartMs
   const rows: HistoryRow[] = []
   let lastT = -Infinity
   for (let i = 0; i < bucketCount; i += 1) {
-    const t = span <= 0 ? finalMs : windowStartMs + Math.round((i / bucketCount) * span)
+    const t = span <= 0 ? finalMs : gridStartMs + Math.round((i / bucketCount) * span)
     if (t >= finalMs || t <= lastT) continue
     rows.push(gridRow(t))
     lastT = t
