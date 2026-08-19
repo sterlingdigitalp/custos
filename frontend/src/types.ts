@@ -11,6 +11,8 @@ export interface Snapshot {
   fbaOfferCount: number | null
   salesRank: number | null
   rankCategory: string | null
+  /** Blended history provenance (KEEPA-BACKFILL K3). Absent on older/other endpoints. */
+  source?: 'sweep' | 'keepa'
 }
 
 export interface Product {

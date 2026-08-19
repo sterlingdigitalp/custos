@@ -19,7 +19,6 @@ import {
   listAlerts,
   listProducts,
   listSeedQueries,
-  seriesForAsin,
   updateAlert,
   updateProduct,
   updateSeedQuery,
@@ -30,6 +29,7 @@ import {
   type Settings,
 } from '../db/repo.js'
 import type { DatabaseHandle } from '../db/schema.js'
+import { buildHistorySeries } from '../history/series.js'
 import { importSelleramp, parseSelleramp } from '../import/selleramp.js'
 import { computeCeilings } from '../keepa/ceilings.js'
 import { importKeepaStats, previewKeepaStats } from '../keepa/stats-import.js'
@@ -592,13 +592,25 @@ export function buildServer(db: DatabaseHandle, deps: ServerDependencies): Fasti
   server.get('/api/products/:asin/history', async (request) => {
     const asin = normalizedAsin((request.params as Record<string, unknown>).asin)
     const query = request.query as Record<string, unknown>
-    rejectUnknownFields(query, ['days'])
+    rejectUnknownFields(query, ['days', 'maxPoints'])
     const days = query.days === undefined ? 90 : finiteNumber(
       typeof query.days === 'string' ? Number(query.days) : query.days,
       'days',
     )
     if (days < 0) throw new ApiError('days must be zero or greater')
-    return seriesForAsin(db, asin, days, deps.now?.() ?? new Date())
+    let maxPoints: number | undefined
+    if (query.maxPoints !== undefined) {
+      maxPoints = integer(query.maxPoints, 'maxPoints')
+      if (maxPoints < 1 || maxPoints > 5000) {
+        throw new ApiError('maxPoints must be between 1 and 5000')
+      }
+    }
+    return buildHistorySeries(db, asin, {
+      days,
+      maxPoints,
+      now: deps.now?.() ?? new Date(),
+      sweepIntervalMin: getSettings(db).sweepIntervalMin,
+    })
   })
 
   server.get('/api/alerts', async () => listAlerts(db))

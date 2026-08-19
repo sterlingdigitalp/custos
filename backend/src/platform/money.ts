@@ -30,3 +30,14 @@ export function centsToMoney(cents: number): Money {
 export function centsToMoneyOrNull(cents: number | null): Money | null {
   return cents === null ? null : centsToMoney(cents)
 }
+
+/**
+ * Integer cents → REAL dollars, for callers (like blended history, K3) that
+ * need a legacy float in the snapshots-table shape rather than a Money
+ * object. Division by 100 is exact for any integer cents value, so going
+ * through Money's exact decimal-string representation (moneyFromMinor) and
+ * back to Number is lossless — not a hand-rolled rounding.
+ */
+export function centsToDollars(cents: number | null): number | null {
+  return cents === null ? null : Number(centsToMoney(cents).amount)
+}

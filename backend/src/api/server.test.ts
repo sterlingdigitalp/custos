@@ -67,7 +67,22 @@ describe('Fastify API', () => {
     const history = await server.inject({ method: 'GET', url: '/api/products/A1/history?days=90' })
     expect(history.statusCode).toBe(200)
     expect(history.json()).toHaveLength(1)
-    expect(history.json()[0]).toMatchObject({ asin: 'A1', buyBoxPrice: 12 })
+    expect(history.json()[0]).toMatchObject({ asin: 'A1', buyBoxPrice: 12, source: 'sweep' })
+  })
+
+  it('rejects an out-of-range or non-integer maxPoints on the history endpoint', async () => {
+    createProduct(db, { asin: 'B0MAXPTS01', source: 'manual' })
+    for (const maxPoints of ['0', '-1', '5001', '12.5']) {
+      const response = await server.inject({
+        method: 'GET', url: `/api/products/B0MAXPTS01/history?days=90&maxPoints=${maxPoints}`,
+      })
+      expect(response.statusCode).toBe(400)
+    }
+    const ok = await server.inject({
+      method: 'GET', url: '/api/products/B0MAXPTS01/history?days=90&maxPoints=50',
+    })
+    expect(ok.statusCode).toBe(200)
+    expect(ok.json()).toEqual([])
   })
 
   it('previews and applies a SellerAmp CSV without preview writes', async () => {
